@@ -157,8 +157,8 @@ def _measure_latex_size(latex: str) -> tuple[int, int] | None:
             denominator, suffix = _extract_latex_brace(after_num)
             suffix = suffix.strip()
 
-            # 각 부분 측정: 분수 내용은 80% 크기 (HWP 수식 렌더러 기준)
-            FRAC_SCALE = 0.80
+            # 각 부분 측정: 분수 내용은 85% 크기 (HWP 수식 렌더러 기준)
+            FRAC_SCALE = 0.85
             w_prefix = mpl_width(prefix) if prefix else 0
             w_num = mpl_width(numerator, 10 * FRAC_SCALE)
             w_den = mpl_width(denominator, 10 * FRAC_SCALE)
