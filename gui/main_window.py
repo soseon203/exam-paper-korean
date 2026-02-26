@@ -220,123 +220,209 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._setup_ui()
 
+    # ── 통일된 크기 상수 ──
+    _BTN_HEIGHT = 36
+    _PRIMARY_BTN_HEIGHT = 42
+    _ICON_SIZE = 16
+
     def _setup_ui(self):
         self.setWindowTitle("수학 시험지 한글화 변환기")
-        self.setMinimumSize(700, 550)
+        self.setMinimumSize(720, 600)
         self.setAcceptDrops(True)
 
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setSpacing(12)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(0)
+        layout.setContentsMargins(24, 20, 24, 20)
 
-        # ── API 키 설정 ──
+        # ── 섹션 1: API 키 ──
+        section_label = QLabel("API 설정")
+        section_label.setStyleSheet(
+            "font-size: 11px; font-weight: 600; color: #667085;"
+            "text-transform: uppercase; letter-spacing: 1px;"
+            "padding: 0; margin: 0;"
+        )
+        layout.addWidget(section_label)
+        layout.addSpacing(6)
+
         api_layout = QHBoxLayout()
-        api_label = QLabel("API 키:")
-        api_label.setFixedWidth(60)
+        api_layout.setSpacing(10)
+        api_label = QLabel("API 키")
+        api_label.setFixedWidth(48)
+        api_label.setStyleSheet("font-size: 13px; color: #344054; font-weight: 500;")
         self._api_key_input = QLineEdit()
         self._api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_key_input.setPlaceholderText("Anthropic API 키를 입력하세요")
+        self._api_key_input.setFixedHeight(self._BTN_HEIGHT)
         self._load_api_key()
         api_layout.addWidget(api_label)
         api_layout.addWidget(self._api_key_input)
         layout.addLayout(api_layout)
 
-        # ── 파일 선택 영역 ──
-        file_layout = QHBoxLayout()
+        # 구분선
+        layout.addSpacing(16)
+        self._add_separator(layout)
+        layout.addSpacing(16)
+
+        # ── 섹션 2: 파일 선택 ──
+        section_label2 = QLabel("입력 파일")
+        section_label2.setStyleSheet(
+            "font-size: 11px; font-weight: 600; color: #667085;"
+            "text-transform: uppercase; letter-spacing: 1px;"
+            "padding: 0; margin: 0;"
+        )
+        layout.addWidget(section_label2)
+        layout.addSpacing(6)
+
         self._file_path_label = QLabel("파일을 드래그하거나 선택하세요")
         self._file_path_label.setStyleSheet(
             "QLabel {"
-            "  border: 2px dashed #aaa;"
-            "  border-radius: 8px;"
-            "  padding: 30px;"
-            "  background: #f8f9fa;"
-            "  color: #666;"
-            "  font-size: 14px;"
+            "  border: 2px dashed #d0d5dd;"
+            "  border-radius: 10px;"
+            "  padding: 24px;"
+            "  background: #f9fafb;"
+            "  color: #667085;"
+            "  font-size: 13px;"
             "}"
         )
         self._file_path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._file_path_label.setMinimumHeight(100)
+        self._file_path_label.setMinimumHeight(80)
         layout.addWidget(self._file_path_label)
+        layout.addSpacing(8)
 
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
         self._browse_btn = QPushButton("파일 선택")
         self._browse_btn.clicked.connect(self._browse_file)
-        self._browse_btn.setFixedHeight(36)
+        self._browse_btn.setFixedHeight(self._BTN_HEIGHT)
+        self._browse_btn.setFixedWidth(120)
         btn_layout.addWidget(self._browse_btn)
 
-        # ── 출력 경로 ──
-        out_label = QLabel("출력:")
-        out_label.setFixedWidth(40)
+        out_label = QLabel("출력")
+        out_label.setFixedWidth(30)
+        out_label.setStyleSheet("font-size: 13px; color: #344054; font-weight: 500;")
         self._output_input = QLineEdit()
         self._output_input.setPlaceholderText("출력 파일 경로 (자동 생성)")
+        self._output_input.setFixedHeight(self._BTN_HEIGHT)
+        self._output_browse_btn = QPushButton("경로")
+        self._output_browse_btn.setFixedHeight(self._BTN_HEIGHT)
+        self._output_browse_btn.setFixedWidth(80)
+        self._output_browse_btn.setToolTip("출력 경로 직접 지정")
+        self._output_browse_btn.clicked.connect(self._browse_output)
         btn_layout.addWidget(out_label)
         btn_layout.addWidget(self._output_input)
+        btn_layout.addWidget(self._output_browse_btn)
         layout.addLayout(btn_layout)
+        layout.addSpacing(6)
 
         # ── 양식 파일(템플릿) 선택 ──
         template_layout = QHBoxLayout()
+        template_layout.setSpacing(10)
         self._template_btn = QPushButton("양식 파일 선택")
-        self._template_btn.setFixedHeight(36)
+        self._template_btn.setFixedHeight(self._BTN_HEIGHT)
+        self._template_btn.setFixedWidth(120)
         self._template_btn.setToolTip(
-            "한글(.hwpx/.hwp) 양식 파일을 선택하면 해당 서식(여백, 글꼴, 스타일)이 적용됩니다"
+            "한글(.hwpx/.hwp) 양식 파일을 선택하면\n해당 서식(여백, 글꼴, 스타일)이 적용됩니다"
         )
         self._template_btn.clicked.connect(self._browse_template)
         template_layout.addWidget(self._template_btn)
 
         self._template_label = QLabel("양식 없음 (기본 서식)")
-        self._template_label.setStyleSheet("color: #888; font-size: 12px;")
+        self._template_label.setStyleSheet("color: #98a2b3; font-size: 12px;")
         template_layout.addWidget(self._template_label, 1)
 
         self._template_clear_btn = QPushButton("해제")
-        self._template_clear_btn.setFixedHeight(36)
-        self._template_clear_btn.setFixedWidth(50)
+        self._template_clear_btn.setFixedHeight(self._BTN_HEIGHT)
+        self._template_clear_btn.setFixedWidth(80)
         self._template_clear_btn.setEnabled(False)
         self._template_clear_btn.clicked.connect(self._clear_template)
         template_layout.addWidget(self._template_clear_btn)
         layout.addLayout(template_layout)
 
-        # ── 변환 버튼 ──
+        # 구분선
+        layout.addSpacing(16)
+        self._add_separator(layout)
+        layout.addSpacing(16)
+
+        # ── 섹션 3: 변환 ──
         convert_layout = QHBoxLayout()
+        convert_layout.setSpacing(10)
         self._convert_btn = QPushButton("변환 시작")
-        self._convert_btn.setFixedHeight(44)
+        self._convert_btn.setFixedHeight(self._PRIMARY_BTN_HEIGHT)
+        self._convert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._convert_btn.setStyleSheet(
             "QPushButton {"
-            "  background-color: #0d6efd;"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "    stop:0 #1570ef, stop:1 #0d6efd);"
             "  color: white;"
             "  border: none;"
-            "  border-radius: 6px;"
-            "  font-size: 15px;"
-            "  font-weight: bold;"
+            "  border-radius: 8px;"
+            "  font-size: 14px;"
+            "  font-weight: 600;"
+            "  padding: 0 20px;"
             "}"
-            "QPushButton:hover { background-color: #0b5ed7; }"
-            "QPushButton:disabled { background-color: #6c757d; }"
+            "QPushButton:hover {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "    stop:0 #0d6efd, stop:1 #0b5ed7);"
+            "}"
+            "QPushButton:pressed { background: #0b5ed7; }"
+            "QPushButton:disabled {"
+            "  background: #e4e7ec;"
+            "  color: #98a2b3;"
+            "}"
         )
         self._convert_btn.clicked.connect(self._start_conversion)
         convert_layout.addWidget(self._convert_btn)
 
         self._cancel_btn = QPushButton("취소")
-        self._cancel_btn.setFixedHeight(44)
+        self._cancel_btn.setFixedHeight(self._PRIMARY_BTN_HEIGHT)
         self._cancel_btn.setFixedWidth(80)
         self._cancel_btn.setEnabled(False)
+        self._cancel_btn.setStyleSheet(
+            "QPushButton {"
+            "  border: 1px solid #fda29b;"
+            "  border-radius: 8px;"
+            "  color: #b42318;"
+            "  background: #ffffff;"
+            "  font-weight: 500;"
+            "}"
+            "QPushButton:hover { background: #fef3f2; }"
+            "QPushButton:disabled {"
+            "  border: 1px solid #e4e7ec;"
+            "  color: #98a2b3;"
+            "  background: #f2f4f7;"
+            "}"
+        )
         self._cancel_btn.clicked.connect(self._cancel_conversion)
         convert_layout.addWidget(self._cancel_btn)
         layout.addLayout(convert_layout)
+        layout.addSpacing(12)
 
         # ── 진행률 ──
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self._progress_bar.setTextVisible(True)
-        self._progress_bar.setFixedHeight(24)
+        self._progress_bar.setFixedHeight(22)
         layout.addWidget(self._progress_bar)
+        layout.addSpacing(4)
 
         self._status_label = QLabel("대기 중")
-        self._status_label.setStyleSheet("color: #666; font-size: 12px;")
+        self._status_label.setStyleSheet("color: #667085; font-size: 12px;")
         layout.addWidget(self._status_label)
+        layout.addSpacing(12)
 
         # ── 로그 출력 ──
+        log_label = QLabel("변환 로그")
+        log_label.setStyleSheet(
+            "font-size: 11px; font-weight: 600; color: #667085;"
+            "text-transform: uppercase; letter-spacing: 1px;"
+            "padding: 0; margin: 0;"
+        )
+        layout.addWidget(log_label)
+        layout.addSpacing(6)
+
         self._log_output = QPlainTextEdit()
         self._log_output.setReadOnly(True)
         self._log_output.setFont(QFont("Consolas", 9))
@@ -346,6 +432,14 @@ class MainWindow(QMainWindow):
 
         self._selected_file: str | None = None
         self._selected_template: str | None = None
+
+    @staticmethod
+    def _add_separator(layout: QVBoxLayout):
+        """얇은 구분선 추가."""
+        sep = QWidget()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background-color: #e4e7ec;")
+        layout.addWidget(sep)
 
     def _load_api_key(self):
         """설정에서 API 키 로드."""
@@ -370,11 +464,12 @@ class MainWindow(QMainWindow):
                 self._file_path_label.setStyleSheet(
                     "QLabel {"
                     "  border: 2px dashed #0d6efd;"
-                    "  border-radius: 8px;"
-                    "  padding: 30px;"
-                    "  background: #e7f1ff;"
-                    "  color: #0d6efd;"
-                    "  font-size: 14px;"
+                    "  border-radius: 10px;"
+                    "  padding: 24px;"
+                    "  background: #eff8ff;"
+                    "  color: #1570ef;"
+                    "  font-size: 13px;"
+                    "  font-weight: 500;"
                     "}"
                 )
 
@@ -392,12 +487,12 @@ class MainWindow(QMainWindow):
     def _reset_drop_style(self):
         self._file_path_label.setStyleSheet(
             "QLabel {"
-            "  border: 2px dashed #aaa;"
-            "  border-radius: 8px;"
-            "  padding: 30px;"
-            "  background: #f8f9fa;"
-            "  color: #666;"
-            "  font-size: 14px;"
+            "  border: 2px dashed #d0d5dd;"
+            "  border-radius: 10px;"
+            "  padding: 24px;"
+            "  background: #f9fafb;"
+            "  color: #667085;"
+            "  font-size: 13px;"
             "}"
         )
 
@@ -409,16 +504,16 @@ class MainWindow(QMainWindow):
     def _set_file(self, path: str):
         self._selected_file = path
         name = Path(path).name
-        self._file_path_label.setText(f"선택된 파일: {name}")
+        self._file_path_label.setText(name)
         self._file_path_label.setStyleSheet(
             "QLabel {"
-            "  border: 2px solid #198754;"
-            "  border-radius: 8px;"
-            "  padding: 30px;"
-            "  background: #d1e7dd;"
-            "  color: #198754;"
-            "  font-size: 14px;"
-            "  font-weight: bold;"
+            "  border: 2px solid #32d583;"
+            "  border-radius: 10px;"
+            "  padding: 24px;"
+            "  background: #ecfdf3;"
+            "  color: #027a48;"
+            "  font-size: 13px;"
+            "  font-weight: 600;"
             "}"
         )
 
@@ -440,6 +535,20 @@ class MainWindow(QMainWindow):
         )
         if path:
             self._set_file(path)
+
+    def _browse_output(self):
+        """출력 경로 직접 지정."""
+        current = self._output_input.text().strip()
+        start_dir = str(Path(current).parent) if current else ""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "출력 파일 경로 지정",
+            current or start_dir,
+            "HWPX 파일 (*.hwpx);;모든 파일 (*.*)",
+        )
+        if path:
+            self._output_input.setText(path)
+            self._log(f"출력 경로 지정: {path}")
 
     # ── 양식 파일(템플릿) ──
 
@@ -465,9 +574,9 @@ class MainWindow(QMainWindow):
 
         self._selected_template = path
         name = Path(path).name
-        self._template_label.setText(f"양식: {name}")
+        self._template_label.setText(name)
         self._template_label.setStyleSheet(
-            "color: #198754; font-size: 12px; font-weight: bold;"
+            "color: #027a48; font-size: 12px; font-weight: 600;"
         )
         self._template_clear_btn.setEnabled(True)
         self._log(f"양식 파일 설정: {path}")
@@ -477,7 +586,7 @@ class MainWindow(QMainWindow):
         """템플릿 선택 해제."""
         self._selected_template = None
         self._template_label.setText("양식 없음 (기본 서식)")
-        self._template_label.setStyleSheet("color: #888; font-size: 12px;")
+        self._template_label.setStyleSheet("color: #98a2b3; font-size: 12px;")
         self._template_clear_btn.setEnabled(False)
         self._log("양식 파일 해제됨")
 
@@ -578,6 +687,7 @@ class MainWindow(QMainWindow):
         self._convert_btn.setEnabled(not converting)
         self._cancel_btn.setEnabled(converting)
         self._browse_btn.setEnabled(not converting)
+        self._output_browse_btn.setEnabled(not converting)
         self._api_key_input.setEnabled(not converting)
         self._template_btn.setEnabled(not converting)
         self._template_clear_btn.setEnabled(

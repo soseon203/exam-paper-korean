@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -40,6 +41,9 @@ NS = {
 # 원문자 ①②③④⑤
 CIRCLE_NUMBERS = {1: "\u2460", 2: "\u2461", 3: "\u2462", 4: "\u2463", 5: "\u2464"}
 
+# 우측정렬 문단 속성 ID (배점용, header.xml에 동적 추가)
+_RIGHT_ALIGN_PR_ID = "100"
+
 
 def _qn(prefix: str, local: str) -> str:
     """Clark notation으로 네임스페이스 태그 생성."""
@@ -51,11 +55,208 @@ def _random_id() -> str:
     return str(random.randint(100000000, 4294967295))
 
 
+# 기호로 렌더링되는 HWP 명령어 (1문자 기호로 치환됨)
+# 긴 이름을 먼저 배치하여 부분 일치 방지 (예: "varepsilon" 전에 "epsilon" 처리 방지)
+_SYMBOL_KEYWORDS = [
+    # latex_to_hwpeq.py가 생성하는 대문자 키워드
+    "PLUSMINUS", "MINUSPLUS", "SMALLUNION", "SMALLINTER",
+    "APPROX", "PROPTO", "LAPLACE", "BULLET", "TRIANGLE",
+    "DIAMOND", "SQUARE",
+    "EQUIV", "SIMEQ", "ASYMP", "DOTEQ",
+    "TIMES", "CDOT", "EXIST",
+    "WEDGE", "LNOT", "OPLUS", "OTIMES",
+    "VDASH", "MODELS",
+    "PREC", "SUCC", "CONG", "OWNS", "CIRC", "STAR",
+    "DIV", "LEQ", "GEQ", "SIM", "VEE", "BOT", "TOP",
+    # 소문자 그리스 문자
+    "varepsilon", "vartheta", "varphi",
+    "epsilon", "upsilon", "lambda",
+    "alpha", "beta", "gamma", "delta", "zeta", "eta", "theta",
+    "iota", "kappa", "mu", "nu", "xi", "pi", "rho", "sigma",
+    "tau", "phi", "chi", "psi", "omega",
+    # 기타 소문자 키워드
+    "partial", "therefore", "because", "forall", "exists",
+    "emptyset", "subseteq", "supseteq", "subset", "supset",
+    "notin", "parallel",
+    "infty", "prime", "dprime", "angle", "nabla", "bullet",
+    "approx", "propto", "equiv", "neq", "leq", "geq", "sim",
+    "cdot", "times", "div", "pm", "mp", "inf", "in",
+]
+
+# 대형 연산자 (1문자 넓은 기호)
+_LARGE_OP_KEYWORDS = ["SUM", "PROD", "OINT", "DINT", "TINT", "INT"]
+
+# 구조 명령어 (렌더링에 기여하지 않음)
+_STRUCT_KEYWORDS = [
+    "eqalign", "matrix", "cases", "pile",
+    "sqrt", "root", "of",
+    "over", "atop",
+    "from", "left", "right",
+    "roman", "bold", "ital",
+    "to",
+]
+
+
+def _extract_latex_brace(s: str) -> tuple[str, str]:
+    """LaTeX 문자열에서 첫 번째 {content}를 추출.
+
+    Returns:
+        (content, rest_of_string)
+    """
+    s = s.lstrip()
+    if not s or s[0] != "{":
+        return ("", s)
+    depth = 0
+    for i, ch in enumerate(s):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return (s[1:i], s[i + 1 :])
+    return (s[1:], "")
+
+
+def _measure_latex_size(latex: str) -> tuple[int, int] | None:
+    """matplotlib로 LaTeX 수식의 렌더링 크기를 측정.
+
+    분수(\\frac) 포함 시 분자·분모를 개별 측정하여 합성합니다.
+    HWP 수식 렌더러는 분수 내용을 약 75% 크기로 렌더링하므로,
+    분자·분모를 fontsize×0.75로 측정해서 정확한 너비를 구합니다.
+
+    Returns:
+        (width, height) in hwpunit, or None if measurement fails.
+    """
+    try:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+
+        fig = Figure(figsize=(10, 2), dpi=72)
+        canvas = FigureCanvasAgg(fig)
+        renderer = canvas.get_renderer()
+
+        def mpl_width(expr: str, fontsize: float = 10.0) -> int:
+            """LaTeX 식의 렌더링 너비를 hwpunit로 반환."""
+            if not expr.strip():
+                return 0
+            t = fig.text(0, 0, f"${expr}$", fontsize=fontsize)
+            bb = t.get_window_extent(renderer)
+            w = int(bb.width * 100)
+            t.remove()
+            return w
+
+        # 분수 포함 여부 확인
+        frac_match = re.search(r"\\(?:d?frac)\s*\{", latex)
+        if frac_match:
+            # prefix: \frac 앞의 내용
+            prefix = latex[: frac_match.start()].strip()
+            rest = latex[frac_match.end() - 1 :]  # '{' 포함
+
+            # 분자·분모 추출
+            numerator, after_num = _extract_latex_brace(rest)
+            denominator, suffix = _extract_latex_brace(after_num)
+            suffix = suffix.strip()
+
+            # 각 부분 측정: 분수 내용은 80% 크기 (HWP 수식 렌더러 기준)
+            FRAC_SCALE = 0.80
+            w_prefix = mpl_width(prefix) if prefix else 0
+            w_num = mpl_width(numerator, 10 * FRAC_SCALE)
+            w_den = mpl_width(denominator, 10 * FRAC_SCALE)
+            w_suffix = mpl_width(suffix) if suffix else 0
+
+            # 합성: prefix + space + fraction + space + suffix
+            w_frac = max(w_num, w_den) + 300  # fraction bar padding
+            w = w_prefix
+            if w_prefix:
+                w += 200  # prefix와 분수 사이 간격
+            w += w_frac
+            if w_suffix:
+                w += 200  # 분수와 suffix 사이 간격
+                w += w_suffix
+
+            h = 2400  # 분수 기본 높이
+            if "\\sqrt" in latex:
+                h = max(h, 3200)
+
+            return (max(w, 800), h)
+
+        # 분수 없는 경우: 직접 측정
+        w = mpl_width(latex)
+        h = 1200
+        if "\\sqrt" in latex:
+            h = 1600
+
+        return (max(w, 800), h)
+    except Exception:
+        return None
+
+
+def _estimate_equation_size(hwp_eq_script: str) -> tuple[int, int]:
+    """수식 크기 추정 (폴백용, matplotlib 측정 실패 시 사용).
+
+    HWP 수식 스크립트에서 가시 문자를 세어 크기를 추정합니다.
+    """
+    has_fraction = "over" in hwp_eq_script or "atop" in hwp_eq_script
+    has_sqrt = "sqrt" in hwp_eq_script or "root" in hwp_eq_script
+
+    if has_fraction:
+        parts = hwp_eq_script.replace("atop", "over").split("over")
+        visible_len = max(_visual_char_count(p) for p in parts)
+    else:
+        visible_len = _visual_char_count(hwp_eq_script)
+
+    CHAR_WIDTH = 650
+    PADDING = 200
+    width = max(int(visible_len * CHAR_WIDTH) + PADDING, 800)
+
+    if has_fraction:
+        width = int(width * 1.4)
+    if has_sqrt:
+        width = int(width * 1.4)
+
+    height = 1200
+    if has_fraction:
+        height = 2400
+    if has_sqrt:
+        height = max(height, 1600)
+    if has_fraction and has_sqrt:
+        height = max(height, 3200)
+
+    return (width, height)
+
+
+def _visual_char_count(text: str) -> float:
+    """HWP 수식 스크립트의 가시 문자 수 (폴백용)."""
+    s = text
+    for kw in _SYMBOL_KEYWORDS:
+        s = s.replace(kw, "G")
+    for kw in _LARGE_OP_KEYWORDS:
+        s = s.replace(kw, "W")
+    for cmd in _STRUCT_KEYWORDS:
+        s = s.replace(cmd, "")
+
+    sup_sub_chars = 0
+    for m in re.finditer(r'[\^_]\{([^{}]*)\}', s):
+        content = m.group(1).replace(" ", "")
+        sup_sub_chars += len(content)
+    s_no_brace = re.sub(r'[\^_]\{[^{}]*\}', '', s)
+    for m in re.finditer(r'[\^_](\S)', s_no_brace):
+        sup_sub_chars += 1
+
+    for ch in "{}^_":
+        s = s.replace(ch, "")
+    total = len(s.replace(" ", "").strip())
+
+    base = total - sup_sub_chars
+    return base + sup_sub_chars * 0.5
+
+
 class HWPXWriter:
     """HWPX 문서 생성기."""
 
     def __init__(self):
         self._image_counter = 0
+        self._eq_counter = 0
         self._embedded_images: dict[str, bytes] = {}  # bindata id → image bytes
 
     def write(
@@ -119,6 +320,9 @@ class HWPXWriter:
         # 섹션 변경 표시 후 저장
         section.mark_dirty()
         doc.save_to_path(str(output_path))
+
+        # 우측정렬 paraPr 추가 (배점용)
+        self._inject_right_align_parapr(output_path)
 
         # 수식 이미지가 있으면 ZIP에 추가
         if self._embedded_images:
@@ -197,6 +401,9 @@ class HWPXWriter:
         )
         self._replace_in_zip(output_path, "Contents/section0.xml", new_section_bytes)
 
+        # 우측정렬 paraPr 추가 (배점용)
+        self._inject_right_align_parapr(output_path)
+
         # 수식 이미지가 있으면 ZIP에 추가
         if self._embedded_images:
             self._inject_images_to_zip(output_path)
@@ -239,21 +446,24 @@ class HWPXWriter:
 
     def _write_question(self, sec_elem: etree._Element, question: Question):
         """문제 하나를 삽입."""
-        # 문제 번호 + 배점 행
-        header_parts = [f"{question.number}."]
-        if question.score:
-            header_parts.append(f" [{question.score}점]")
-
         # 문제 본문 첫 줄에 번호 포함
         p_elem = self._create_paragraph(sec_elem)
 
-        # 번호 + 배점 run
+        # 번호 run
         run = self._create_run(p_elem, char_pr_id="1")
-        self._set_run_text(run, " ".join(header_parts) + " ")
+        self._set_run_text(run, f"{question.number}. ")
 
         # 본문 내용
         for block in question.contents:
             self._write_content_block(sec_elem, p_elem, block)
+
+        # 배점을 별도 우측정렬 문단으로 추가
+        if question.score:
+            score_para = self._create_paragraph(
+                sec_elem, para_pr_id=_RIGHT_ALIGN_PR_ID
+            )
+            run = self._create_run(score_para)
+            self._set_run_text(run, f"[{question.score}점]")
 
         # 선택지
         for choice in question.choices:
@@ -301,12 +511,15 @@ class HWPXWriter:
     def _insert_equation(self, p_elem: etree._Element, latex: str):
         """수식을 문단에 삽입.
 
-        1차: 네이티브 HWP 수식 스크립트 삽입 시도
-        2차: 수식 이미지 폴백
+        1차: matplotlib로 수식 크기 측정 → 네이티브 HWP 수식 삽입
+        2차: 측정 실패 시 휴리스틱 추정으로 폴백
+        3차: 수식 변환 실패 시 이미지 폴백
         """
         try:
             hwp_eq = latex_to_hwpeq(latex)
-            self._inject_equation_xml(p_elem, hwp_eq)
+            # matplotlib로 실제 수식 크기 측정 (정확), 실패 시 None → 폴백
+            measured_size = _measure_latex_size(latex)
+            self._inject_equation_xml(p_elem, hwp_eq, size=measured_size)
         except Exception as e:
             logger.warning("수식 변환 실패, 이미지 폴백: %s (%s)", latex, e)
             try:
@@ -318,50 +531,75 @@ class HWPXWriter:
                 run = self._create_run(p_elem)
                 self._set_run_text(run, f"[{latex}]")
 
-    def _inject_equation_xml(self, p_elem: etree._Element, hwp_eq_script: str):
+    def _inject_equation_xml(
+        self,
+        p_elem: etree._Element,
+        hwp_eq_script: str,
+        size: tuple[int, int] | None = None,
+    ):
         """네이티브 HWPX 수식 XML을 문단에 삽입.
 
-        HWPX의 수식은 ShapeObject로 다음 구조:
-        <hp:run>
-          <hp:equation id="..." version="2" baseLine="85" ...>
-            <hp:sz width="..." height="..." .../>
-            <hp:pos treatAsChar="1" .../>
-            <hp:script>[수식 스크립트]</hp:script>
-          </hp:equation>
-        </hp:run>
+        Args:
+            p_elem: 부모 문단 요소
+            hwp_eq_script: HWP 수식 스크립트
+            size: (width, height) in hwpunit. None이면 휴리스틱 추정.
         """
+        self._eq_counter += 1
+
+        if size is None:
+            size = _estimate_equation_size(hwp_eq_script)
+
         run = etree.SubElement(p_elem, _qn("hp", "run"))
         run.set("charPrIDRef", "0")
 
         eq = etree.SubElement(run, _qn("hp", "equation"))
         eq.set("id", _random_id())
-        eq.set("version", "2")
+        eq.set("zOrder", str(self._eq_counter))
+        eq.set("numberingType", "EQUATION")
+        eq.set("textWrap", "TOP_AND_BOTTOM")
+        eq.set("textFlow", "BOTH_SIDES")
+        eq.set("lock", "0")
+        eq.set("dropcapstyle", "None")
+        eq.set("version", "Equation Version 60")
         eq.set("baseLine", "85")
         eq.set("textColor", "#000000")
         eq.set("baseUnit", "1000")
+        eq.set("lineMode", "CHAR")
+        eq.set("font", "HYhwpEQ")
 
-        # ShapeSize — 수식 길이에 비례하여 추정
-        # HWP unit: 1pt ≈ 100 hwpunit, 기본 글자 크기 10pt = 1000 hwpunit
-        est_width = max(len(hwp_eq_script) * 500, 3000)
-        est_height = 1400  # 기본 한 줄 수식 높이
-        if "over" in hwp_eq_script or "atop" in hwp_eq_script:
-            est_height = 2400  # 분수 등 높은 수식
+        # ShapeSize — matplotlib 측정 또는 휴리스틱 추정
+        est_width, est_height = size
         sz = etree.SubElement(eq, _qn("hp", "sz"))
         sz.set("width", str(est_width))
         sz.set("height", str(est_height))
         sz.set("widthRelTo", "ABSOLUTE")
         sz.set("heightRelTo", "ABSOLUTE")
+        sz.set("protect", "0")
 
         # ShapePosition — 글자처럼 취급 (인라인)
         pos = etree.SubElement(eq, _qn("hp", "pos"))
         pos.set("treatAsChar", "1")
-        pos.set("affectLSpacing", "0")
+        pos.set("affectLSpacing", "1")
+        pos.set("flowWithText", "1")
+        pos.set("allowOverlap", "0")
+        pos.set("holdAnchorAndSO", "0")
         pos.set("vertRelTo", "PARA")
         pos.set("horzRelTo", "PARA")
         pos.set("vertAlign", "TOP")
         pos.set("horzAlign", "LEFT")
         pos.set("vertOffset", "0")
         pos.set("horzOffset", "0")
+
+        # 외부 여백 (인라인 수식-텍스트 간 간격)
+        out_margin = etree.SubElement(eq, _qn("hp", "outMargin"))
+        out_margin.set("left", "170")
+        out_margin.set("right", "170")
+        out_margin.set("top", "0")
+        out_margin.set("bottom", "0")
+
+        # 수식 주석
+        shape_comment = etree.SubElement(eq, _qn("hp", "shapeComment"))
+        shape_comment.text = "수식입니다."
 
         # 수식 스크립트
         script = etree.SubElement(eq, _qn("hp", "script"))
@@ -422,6 +660,56 @@ class HWPXWriter:
 
         # 원본 교체
         shutil.move(str(temp_path), str(hwpx_path))
+
+    @staticmethod
+    def _inject_right_align_parapr(zip_path: Path):
+        """header.xml에 우측정렬 문단 속성(paraPr)을 추가.
+
+        배점 표시용 RIGHT 정렬 paraPr를 header.xml의 paraProperties에 추가합니다.
+        """
+        HH = "http://www.hancom.co.kr/hwpml/2011/head"
+        HC = "http://www.hancom.co.kr/hwpml/2011/core"
+        HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+        with zipfile.ZipFile(str(zip_path), "r") as zf:
+            header_bytes = zf.read("Contents/header.xml")
+
+        root = etree.fromstring(header_bytes)
+
+        # paraProperties 찾기
+        para_props = root.find(f".//{{{HH}}}paraProperties")
+        if para_props is None:
+            return
+
+        # 이미 같은 ID가 있으면 스킵
+        for pp in para_props.findall(f"{{{HH}}}paraPr"):
+            if pp.get("id") == _RIGHT_ALIGN_PR_ID:
+                return
+
+        # 기존 paraPr id=0을 기반으로 복제 후 정렬만 RIGHT로 변경
+        base_pr = para_props.find(f"{{{HH}}}paraPr[@id='0']")
+        if base_pr is None:
+            return
+
+        import copy
+        new_pr = copy.deepcopy(base_pr)
+        new_pr.set("id", _RIGHT_ALIGN_PR_ID)
+
+        # align 요소의 horizontal을 RIGHT로 변경
+        align_elem = new_pr.find(f"{{{HH}}}align")
+        if align_elem is not None:
+            align_elem.set("horizontal", "RIGHT")
+
+        para_props.append(new_pr)
+
+        # itemCnt 업데이트
+        old_cnt = int(para_props.get("itemCnt", "0"))
+        para_props.set("itemCnt", str(old_cnt + 1))
+
+        new_header = etree.tostring(
+            root, xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+        HWPXWriter._replace_in_zip(zip_path, "Contents/header.xml", new_header)
 
     @staticmethod
     def _ensure_linesegarray(sec_elem: etree._Element):

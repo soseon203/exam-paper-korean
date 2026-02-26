@@ -53,11 +53,15 @@ class PreviewDialog(QDialog):
         self._accepted = False
         self._setup_ui()
 
+    _BTN_HEIGHT = 36
+
     def _setup_ui(self):
         self.setWindowTitle("변환 미리보기")
         self.setMinimumSize(800, 600)
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(0)
+        layout.setContentsMargins(24, 20, 24, 20)
 
         # ── 요약 헤더 ──
         total_questions = sum(len(p.exam_page.questions) for p in self.pages)
@@ -67,23 +71,55 @@ class PreviewDialog(QDialog):
             for p in self.pages
         )
 
-        summary_text = (
-            f"총 {len(self.pages)}페이지 | "
-            f"문제 {total_questions}개 | "
-            f"수식 {total_equations}개"
+        header_label = QLabel("변환 결과 미리보기")
+        header_label.setStyleSheet(
+            "font-size: 16px; font-weight: 600; color: #1d2939; padding: 0; margin: 0;"
+        )
+        layout.addWidget(header_label)
+        layout.addSpacing(8)
+
+        # 요약 뱃지들
+        badges = []
+        badges.append(
+            f'<span style="background:#eff8ff; color:#1570ef; '
+            f'padding:3px 10px; border-radius:10px; font-size:12px;">'
+            f'{len(self.pages)}페이지</span>'
+        )
+        badges.append(
+            f'<span style="background:#f0f9ff; color:#026aa2; '
+            f'padding:3px 10px; border-radius:10px; font-size:12px;">'
+            f'문제 {total_questions}개</span>'
+        )
+        badges.append(
+            f'<span style="background:#f0f9ff; color:#026aa2; '
+            f'padding:3px 10px; border-radius:10px; font-size:12px;">'
+            f'수식 {total_equations}개</span>'
         )
         if total_warnings > 0:
-            summary_text += f" | 경고 {total_warnings}건"
+            badges.append(
+                f'<span style="background:#fffaeb; color:#b54708; '
+                f'padding:3px 10px; border-radius:10px; font-size:12px;">'
+                f'경고 {total_warnings}건</span>'
+            )
 
-        summary_label = QLabel(summary_text)
-        summary_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 8px;")
+        summary_label = QLabel("  ".join(badges))
+        summary_label.setTextFormat(Qt.TextFormat.RichText)
+        summary_label.setStyleSheet("padding: 0; margin: 0;")
         layout.addWidget(summary_label)
+
+        layout.addSpacing(16)
 
         # ── 페이지 목록 (스크롤) ──
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            "QScrollArea { border: 1px solid #e4e7ec; border-radius: 8px; }"
+        )
         scroll_widget = QWidget()
+        scroll_widget.setStyleSheet("background: #f9fafb;")
         scroll_layout = QVBoxLayout(scroll_widget)
+        scroll_layout.setContentsMargins(12, 12, 12, 12)
+        scroll_layout.setSpacing(8)
 
         for page_info in self.pages:
             page_widget = self._create_page_widget(page_info)
@@ -93,27 +129,36 @@ class PreviewDialog(QDialog):
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll)
 
+        layout.addSpacing(16)
+
         # ── 버튼 ──
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
         btn_layout.addStretch()
 
         cancel_btn = QPushButton("취소")
-        cancel_btn.setFixedSize(120, 40)
+        cancel_btn.setFixedSize(80, self._BTN_HEIGHT)
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
         proceed_btn = QPushButton("변환 진행")
-        proceed_btn.setFixedSize(120, 40)
+        proceed_btn.setFixedSize(120, self._BTN_HEIGHT)
+        proceed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         proceed_btn.setStyleSheet(
             "QPushButton {"
-            "  background-color: #0d6efd;"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "    stop:0 #1570ef, stop:1 #0d6efd);"
             "  color: white;"
             "  border: none;"
             "  border-radius: 6px;"
-            "  font-size: 14px;"
-            "  font-weight: bold;"
+            "  font-size: 13px;"
+            "  font-weight: 600;"
             "}"
-            "QPushButton:hover { background-color: #0b5ed7; }"
+            "QPushButton:hover {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "    stop:0 #0d6efd, stop:1 #0b5ed7);"
+            "}"
         )
         proceed_btn.clicked.connect(self.accept)
         btn_layout.addWidget(proceed_btn)
@@ -124,58 +169,83 @@ class PreviewDialog(QDialog):
         """한 페이지의 미리보기 위젯 생성."""
         widget = QWidget()
         widget.setStyleSheet(
-            "QWidget { border: 1px solid #ddd; border-radius: 6px; "
-            "padding: 8px; margin: 4px; background: #fafafa; }"
+            "QWidget#pageCard {"
+            "  border: 1px solid #e4e7ec;"
+            "  border-radius: 8px;"
+            "  padding: 12px;"
+            "  background: #ffffff;"
+            "}"
         )
+        widget.setObjectName("pageCard")
         h_layout = QHBoxLayout(widget)
+        h_layout.setSpacing(16)
 
         # 썸네일
         thumb_label = QLabel()
-        pixmap = self._pil_to_pixmap(info.image, max_height=160)
+        thumb_label.setObjectName("thumb")
+        pixmap = self._pil_to_pixmap(info.image, max_height=140)
         thumb_label.setPixmap(pixmap)
         thumb_label.setFixedSize(pixmap.width(), pixmap.height())
+        thumb_label.setStyleSheet(
+            "QLabel#thumb {"
+            "  border: 1px solid #e4e7ec;"
+            "  border-radius: 4px;"
+            "  background: #ffffff;"
+            "}"
+        )
         h_layout.addWidget(thumb_label)
 
         # 정보 영역
         info_layout = QVBoxLayout()
+        info_layout.setSpacing(6)
 
         # 페이지 번호 + 문제 수
         q_count = len(info.exam_page.questions)
         eq_count = info.ocr_quality.equation_count
         title = QLabel(
-            f"<b>페이지 {info.page_number}</b> — "
-            f"문제 {q_count}개, 수식 {eq_count}개"
+            f"<b>페이지 {info.page_number}</b>"
+            f'<span style="color:#667085;"> — '
+            f"문제 {q_count}개, 수식 {eq_count}개</span>"
         )
-        title.setStyleSheet("font-size: 13px; border: none;")
+        title.setStyleSheet("font-size: 13px; border: none; color: #1d2939;")
         info_layout.addWidget(title)
 
         # 품질 점수
         score = info.image_quality.score
-        color = "#198754" if info.image_quality.passed else "#dc3545"
+        if info.image_quality.passed:
+            score_color = "#027a48"
+            score_bg = "#ecfdf3"
+        else:
+            score_color = "#b42318"
+            score_bg = "#fef3f2"
         score_label = QLabel(
-            f'품질 점수: <span style="color:{color}; font-weight:bold;">'
+            f'<span style="color:{score_color}; font-weight:600;">'
             f"{score:.0f}/100</span>"
         )
-        score_label.setStyleSheet("font-size: 12px; border: none;")
+        score_label.setStyleSheet(
+            f"font-size: 12px; border: none; background: {score_bg};"
+            f"border-radius: 10px; padding: 2px 10px;"
+        )
+        score_label.setFixedWidth(70)
         info_layout.addWidget(score_label)
 
         # 경고 목록
         all_warnings = info.image_quality.warnings + info.ocr_quality.warnings
         if all_warnings:
             for warn in all_warnings:
-                warn_label = QLabel(f"⚠ {warn}")
+                warn_label = QLabel(f"  {warn}")
                 warn_label.setStyleSheet(
-                    "color: #856404; background: #fff3cd; "
-                    "border-radius: 3px; padding: 2px 6px; "
+                    "color: #b54708; background: #fffaeb; "
+                    "border-radius: 4px; padding: 3px 8px; "
                     "font-size: 11px; border: none;"
                 )
                 warn_label.setWordWrap(True)
                 info_layout.addWidget(warn_label)
         else:
-            ok_label = QLabel("품질 양호")
+            ok_label = QLabel("  품질 양호")
             ok_label.setStyleSheet(
-                "color: #0f5132; background: #d1e7dd; "
-                "border-radius: 3px; padding: 2px 6px; "
+                "color: #027a48; background: #ecfdf3; "
+                "border-radius: 4px; padding: 3px 8px; "
                 "font-size: 11px; border: none;"
             )
             info_layout.addWidget(ok_label)

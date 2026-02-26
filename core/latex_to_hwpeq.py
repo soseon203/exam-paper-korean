@@ -290,14 +290,23 @@ class LaTeXToHWPConverter:
 
     @staticmethod
     def _brace_group(name: str) -> str:
-        """Named group for {content} - non-recursive."""
-        return r"\{(?P<" + name + r">[^{}]*(?:\{[^{}]*\}[^{}]*)*)\}"
+        """Named group for {content} - handles up to 3 levels of nesting."""
+        # 각 단계가 한 단계 더 깊은 중괄호를 허용
+        L0 = r"[^{}]*"
+        L1 = r"(?:[^{}]|\{" + L0 + r"\})*"
+        L2 = r"(?:[^{}]|\{" + L1 + r"\})*"
+        L3 = r"(?:[^{}]|\{" + L2 + r"\})*"
+        return r"\{(?P<" + name + r">" + L3 + r")\}"
 
     @staticmethod
     def _brace_group_or_char(name: str) -> str:
         """Named group for {content} or single char."""
+        L0 = r"[^{}]*"
+        L1 = r"(?:[^{}]|\{" + L0 + r"\})*"
+        L2 = r"(?:[^{}]|\{" + L1 + r"\})*"
+        L3 = r"(?:[^{}]|\{" + L2 + r"\})*"
         return (
-            r"(?:\{(?P<" + name + r">[^{}]*(?:\{[^{}]*\}[^{}]*)*)\}"
+            r"(?:\{(?P<" + name + r">" + L3 + r")\}"
             r"|(?P<" + name + r"_c>[^\s{}\\]))"
         )
 
