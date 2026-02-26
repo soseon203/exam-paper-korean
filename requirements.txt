@@ -1,0 +1,9 @@
+PySide6>=6.6.0
+PyMuPDF>=1.24.0
+Pillow>=10.0.0
+anthropic>=0.40.0
+python-hwpx>=0.2.0
+lxml>=5.0.0
+matplotlib>=3.8.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
