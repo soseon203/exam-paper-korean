@@ -280,7 +280,7 @@ class MainWindow(QMainWindow):
         self._template_btn = QPushButton("양식 파일 선택")
         self._template_btn.setFixedHeight(36)
         self._template_btn.setToolTip(
-            "한글(.hwpx) 양식 파일을 선택하면 해당 서식(여백, 글꼴, 스타일)이 적용됩니다"
+            "한글(.hwpx/.hwp) 양식 파일을 선택하면 해당 서식(여백, 글꼴, 스타일)이 적용됩니다"
         )
         self._template_btn.clicked.connect(self._browse_template)
         template_layout.addWidget(self._template_btn)
@@ -448,7 +448,7 @@ class MainWindow(QMainWindow):
             self,
             "양식 파일 선택",
             "",
-            "HWPX 파일 (*.hwpx);;모든 파일 (*.*)",
+            "한글 파일 (*.hwpx *.hwp);;HWPX 파일 (*.hwpx);;HWP 파일 (*.hwp);;모든 파일 (*.*)",
         )
         if path:
             self._set_template(path)

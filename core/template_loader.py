@@ -3,11 +3,16 @@
 HWPX ZIP 파일에서 페이지 설정과 스타일 정보를 추출합니다.
 복사 기반 접근: 템플릿 HWPX를 통째로 복사하여 section0.xml 내용만 교체하므로,
 header.xml의 글꼴·스타일 정의가 자동으로 보존됩니다.
+
+.hwp 파일이 주어지면 한글 COM 자동화로 .hwpx로 변환 후 로드합니다.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -31,24 +36,31 @@ REQUIRED_FILES = {"Contents/header.xml", "Contents/section0.xml"}
 
 
 def load_template(hwpx_path: str | Path) -> TemplateConfig:
-    """HWPX 템플릿 파일을 로드하여 TemplateConfig를 반환.
+    """HWPX 또는 HWP 템플릿 파일을 로드하여 TemplateConfig를 반환.
+
+    .hwp 파일이 주어지면 한글 COM 자동화로 .hwpx로 변환 후 로드합니다.
 
     Args:
-        hwpx_path: HWPX 템플릿 파일 경로
+        hwpx_path: HWPX 또는 HWP 템플릿 파일 경로
 
     Returns:
         추출된 TemplateConfig
 
     Raises:
         FileNotFoundError: 파일이 없을 때
-        ValueError: 유효하지 않은 HWPX일 때
+        ValueError: 유효하지 않은 파일일 때
+        RuntimeError: HWP 변환 실패 시
     """
     hwpx_path = Path(hwpx_path)
     if not hwpx_path.exists():
         raise FileNotFoundError(f"템플릿 파일을 찾을 수 없습니다: {hwpx_path}")
 
-    if hwpx_path.suffix.lower() != ".hwpx":
-        raise ValueError(f"HWPX 파일이 아닙니다: {hwpx_path.suffix}")
+    ext = hwpx_path.suffix.lower()
+    if ext == ".hwp":
+        # HWP → HWPX 변환
+        hwpx_path = convert_hwp_to_hwpx(hwpx_path)
+    elif ext != ".hwpx":
+        raise ValueError(f"지원하지 않는 파일 형식입니다: {ext} (.hwp 또는 .hwpx만 가능)")
 
     config = TemplateConfig(source_path=hwpx_path)
 
@@ -199,3 +211,88 @@ def _parse_page_properties(sec_pr: etree._Element, config: TemplateConfig):
                 if val:
                     setattr(config, field_name, int(val))
             break
+
+
+# ─── HWP → HWPX 변환 (한글 COM 자동화) ─────────────────────
+
+
+def convert_hwp_to_hwpx(hwp_path: str | Path) -> Path:
+    """한글 COM 자동화를 사용하여 .hwp를 .hwpx로 변환.
+
+    한컴오피스가 설치된 Windows에서만 동작합니다.
+
+    Args:
+        hwp_path: 변환할 .hwp 파일 경로
+
+    Returns:
+        변환된 .hwpx 파일 경로
+
+    Raises:
+        RuntimeError: 한글이 설치되지 않았거나 변환 실패 시
+    """
+    if sys.platform != "win32":
+        raise RuntimeError("HWP → HWPX 변환은 Windows에서만 가능합니다.")
+
+    hwp_path = Path(hwp_path).resolve()
+    if not hwp_path.exists():
+        raise FileNotFoundError(f"HWP 파일을 찾을 수 없습니다: {hwp_path}")
+
+    # 변환된 hwpx를 원본 옆에 저장
+    hwpx_path = hwp_path.with_suffix(".hwpx")
+
+    try:
+        import win32com.client
+    except ImportError:
+        raise RuntimeError(
+            "pywin32가 설치되어 있지 않습니다.\n"
+            "설치: pip install pywin32"
+        )
+
+    hwp = None
+    try:
+        logger.info("한글 COM 객체 생성 중...")
+        hwp = win32com.client.gencache.EnsureDispatch("HWPFrame.HwpObject")
+
+        # 보안 모듈 등록 (자동화 허용)
+        hwp.RegisterModule("FilePathCheckDLL", "SecurityModule")
+
+        # 백그라운드 실행 (창 숨기기)
+        hwp.XHwpWindows.Item(0).Visible = False
+
+        # HAction 방식으로 파일 열기
+        logger.info("HWP 파일 열기: %s", hwp_path)
+        hwp.HAction.GetDefault("FileOpen", hwp.HParameterSet.HFileOpenSave.HSet)
+        hwp.HParameterSet.HFileOpenSave.filename = str(hwp_path)
+        hwp.HParameterSet.HFileOpenSave.Format = "HWP"
+        hwp.HAction.Execute("FileOpen", hwp.HParameterSet.HFileOpenSave.HSet)
+
+        # HAction 방식으로 HWPX 저장
+        logger.info("HWPX로 저장: %s", hwpx_path)
+        hwp.HAction.GetDefault("FileSaveAs_S", hwp.HParameterSet.HFileOpenSave.HSet)
+        hwp.HParameterSet.HFileOpenSave.filename = str(hwpx_path)
+        hwp.HParameterSet.HFileOpenSave.Format = "HWPX"
+        hwp.HAction.Execute("FileSaveAs_S", hwp.HParameterSet.HFileOpenSave.HSet)
+
+        logger.info("HWP → HWPX 변환 완료: %s", hwpx_path)
+
+    except Exception as e:
+        if "HWPFrame.HwpObject" in str(e) or "Class not registered" in str(e):
+            raise RuntimeError(
+                "한컴오피스(한글)가 설치되어 있지 않습니다.\n"
+                "한글이 설치된 PC에서 실행하거나, "
+                "한글에서 직접 .hwpx로 저장해주세요."
+            )
+        raise RuntimeError(f"HWP → HWPX 변환 실패: {e}")
+
+    finally:
+        if hwp is not None:
+            try:
+                hwp.Clear(1)  # 변경사항 무시하고 닫기
+                hwp.Quit()
+            except Exception:
+                pass
+
+    if not hwpx_path.exists():
+        raise RuntimeError("변환된 HWPX 파일이 생성되지 않았습니다.")
+
+    return hwpx_path

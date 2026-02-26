@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from models.exam_document import (
     ContentBlock,
     ContentType,
@@ -10,6 +12,9 @@ from models.exam_document import (
     ExamPage,
     ExamDocument,
 )
+
+# 텍스트 내 인라인 LaTeX $...$ 감지 패턴
+_INLINE_LATEX_RE = re.compile(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)")
 
 
 def parse_ocr_response(ocr_result: dict, page_number: int) -> ExamPage:
@@ -41,9 +46,11 @@ def _parse_question(q_data: dict) -> Question:
 
     # 문제 본문
     for block_data in q_data.get("contents", []):
-        block = _parse_content_block(block_data)
-        if block:
-            question.contents.append(block)
+        result = _parse_content_block(block_data)
+        if isinstance(result, list):
+            question.contents.extend(result)
+        elif result:
+            question.contents.append(result)
 
     # 선택지
     for choice_data in q_data.get("choices", []):
@@ -67,15 +74,22 @@ def _parse_choice(choice_data: dict) -> Choice | None:
 
     choice = Choice(number=number)
     for block_data in choice_data.get("contents", []):
-        block = _parse_content_block(block_data)
-        if block:
-            choice.contents.append(block)
+        result = _parse_content_block(block_data)
+        if isinstance(result, list):
+            choice.contents.extend(result)
+        elif result:
+            choice.contents.append(result)
 
     return choice
 
 
 def _parse_content_block(block_data: dict) -> ContentBlock | None:
-    """콘텐츠 블록 dict를 ContentBlock 객체로 변환."""
+    """콘텐츠 블록 dict를 ContentBlock 객체로 변환.
+
+    텍스트 블록 안에 $...$ 인라인 LaTeX가 포함된 경우
+    텍스트+수식으로 분리하여 리스트로 반환하므로,
+    호출부에서 리스트 여부를 확인해야 합니다.
+    """
     type_str = block_data.get("type", "")
     value = block_data.get("value", "")
 
@@ -91,10 +105,39 @@ def _parse_content_block(block_data: dict) -> ContentBlock | None:
 
     content_type = type_map.get(type_str)
     if content_type is None:
-        # 알 수 없는 타입은 텍스트로 처리
         content_type = ContentType.TEXT
 
+    # 텍스트 블록에 $...$ 인라인 LaTeX가 있으면 분리
+    if content_type == ContentType.TEXT and "$" in value:
+        split = _split_inline_latex(value)
+        if len(split) > 1:
+            return split  # type: ignore[return-value]
+
     return ContentBlock(type=content_type, value=value)
+
+
+def _split_inline_latex(text: str) -> list[ContentBlock]:
+    """텍스트에서 $...$ 인라인 LaTeX를 분리하여 ContentBlock 리스트로 반환."""
+    blocks: list[ContentBlock] = []
+    last_end = 0
+
+    for m in _INLINE_LATEX_RE.finditer(text):
+        # 수식 앞 텍스트
+        before = text[last_end:m.start()]
+        if before:
+            blocks.append(ContentBlock(type=ContentType.TEXT, value=before))
+        # 수식
+        latex = m.group(1).strip()
+        if latex:
+            blocks.append(ContentBlock(type=ContentType.EQUATION, value=latex))
+        last_end = m.end()
+
+    # 마지막 텍스트
+    after = text[last_end:]
+    if after:
+        blocks.append(ContentBlock(type=ContentType.TEXT, value=after))
+
+    return blocks if blocks else [ContentBlock(type=ContentType.TEXT, value=text)]
 
 
 def build_document(

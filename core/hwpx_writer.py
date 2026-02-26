@@ -321,33 +321,50 @@ class HWPXWriter:
     def _inject_equation_xml(self, p_elem: etree._Element, hwp_eq_script: str):
         """네이티브 HWPX 수식 XML을 문단에 삽입.
 
-        HWPX의 수식은 다음 구조:
+        HWPX의 수식은 ShapeObject로 다음 구조:
         <hp:run>
-          <hp:ctrl>
-            <hp:eqEdit charPrIDRef="0" version="2">
-              <hp:script>[수식 스크립트]</hp:script>
-            </hp:eqEdit>
-          </hp:ctrl>
+          <hp:equation id="..." version="2" baseLine="85" ...>
+            <hp:sz width="..." height="..." .../>
+            <hp:pos treatAsChar="1" .../>
+            <hp:script>[수식 스크립트]</hp:script>
+          </hp:equation>
         </hp:run>
         """
         run = etree.SubElement(p_elem, _qn("hp", "run"))
         run.set("charPrIDRef", "0")
 
-        ctrl = etree.SubElement(run, _qn("hp", "ctrl"))
+        eq = etree.SubElement(run, _qn("hp", "equation"))
+        eq.set("id", _random_id())
+        eq.set("version", "2")
+        eq.set("baseLine", "85")
+        eq.set("textColor", "#000000")
+        eq.set("baseUnit", "1000")
 
-        eq_edit = etree.SubElement(ctrl, _qn("hp", "eqEdit"))
-        eq_edit.set("charPrIDRef", "0")
-        eq_edit.set("version", "2")
+        # ShapeSize — 수식 길이에 비례하여 추정
+        # HWP unit: 1pt ≈ 100 hwpunit, 기본 글자 크기 10pt = 1000 hwpunit
+        est_width = max(len(hwp_eq_script) * 500, 3000)
+        est_height = 1400  # 기본 한 줄 수식 높이
+        if "over" in hwp_eq_script or "atop" in hwp_eq_script:
+            est_height = 2400  # 분수 등 높은 수식
+        sz = etree.SubElement(eq, _qn("hp", "sz"))
+        sz.set("width", str(est_width))
+        sz.set("height", str(est_height))
+        sz.set("widthRelTo", "ABSOLUTE")
+        sz.set("heightRelTo", "ABSOLUTE")
 
-        # 수식 크기 속성
-        eq_sz = etree.SubElement(eq_edit, _qn("hp", "sz"))
-        eq_sz.set("baseUnit", "1000")
-        eq_sz.set("subscript", "500")
-        eq_sz.set("superscript", "500")
-        eq_sz.set("bigSymbol", "1500")
-        eq_sz.set("bigSymbolSmall", "1000")
+        # ShapePosition — 글자처럼 취급 (인라인)
+        pos = etree.SubElement(eq, _qn("hp", "pos"))
+        pos.set("treatAsChar", "1")
+        pos.set("affectLSpacing", "0")
+        pos.set("vertRelTo", "PARA")
+        pos.set("horzRelTo", "PARA")
+        pos.set("vertAlign", "TOP")
+        pos.set("horzAlign", "LEFT")
+        pos.set("vertOffset", "0")
+        pos.set("horzOffset", "0")
 
-        script = etree.SubElement(eq_edit, _qn("hp", "script"))
+        # 수식 스크립트
+        script = etree.SubElement(eq, _qn("hp", "script"))
         script.text = hwp_eq_script
 
     def _inject_equation_image(
