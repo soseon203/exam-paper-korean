@@ -107,15 +107,33 @@ def _parse_content_block(block_data: dict) -> ContentBlock | None:
         "equation": ContentType.EQUATION,
         "equation_block": ContentType.EQUATION_BLOCK,
         "image": ContentType.IMAGE,
+        "table": ContentType.TABLE,
     }
 
     content_type = type_map.get(type_str)
     if content_type is None:
         content_type = ContentType.TEXT
 
+    # 표(table) 블록 처리
+    if content_type == ContentType.TABLE:
+        rows = block_data.get("rows", [])
+        return ContentBlock(type=ContentType.TABLE, value=value, rows=rows)
+
+    # 텍스트 블록에 __밑줄__ 마크업이 있으면 분리
+    if content_type == ContentType.TEXT and "__" in value:
+        split = _split_underline_markup(value)
+        if len(split) > 1:
+            return split  # type: ignore[return-value]
+
     # 텍스트 블록에 $...$ 인라인 LaTeX가 있으면 분리
     if content_type == ContentType.TEXT and "$" in value:
         split = _split_inline_latex(value)
+        if len(split) > 1:
+            return split  # type: ignore[return-value]
+
+    # 텍스트 블록에 수식 패턴이 섞여 있으면 분리
+    if content_type == ContentType.TEXT:
+        split = _split_mixed_text_equation(value)
         if len(split) > 1:
             return split  # type: ignore[return-value]
 
@@ -166,6 +184,65 @@ def _split_at_top_level_commas(s: str) -> list[str]:
     return parts
 
 
+# 텍스트 안에서 수식 구간을 감지하는 패턴
+# 영문 변수/숫자 + 수학 연산자(=, >, <, +, -, ×, ÷, ≤, ≥, ≠) 조합
+# 예: "a > 0", "b", "x = 3", "2x + 1"
+_MATH_EXPR_RE = re.compile(
+    r'(?<![a-zA-Z])'          # 앞에 영문자 없음 (단어 중간 방지)
+    r'('
+    r'[a-zA-Z0-9]+'           # 시작: 변수/숫자
+    r'(?:'
+    r'\s*[=><+\-×÷≤≥≠^_]\s*'  # 수학 연산자
+    r'[a-zA-Z0-9]+'           # 뒤따르는 변수/숫자
+    r')*'
+    r')'
+    r'(?![a-zA-Z])'           # 뒤에 영문자 없음
+)
+
+
+def _split_mixed_text_equation(text: str) -> list[ContentBlock]:
+    """텍스트 안에 섞인 수식 패턴(영문 변수, 부등호 등)을 분리.
+
+    예: "(a > 0, b는 정수)에서"
+    → text("(") + eq("a > 0") + text(", ") + eq("b") + text("는 정수)에서")
+    """
+    # 한글이 전혀 없으면 분리 불필요 (순수 텍스트거나 이미 수식)
+    if not re.search(r'[\uac00-\ud7a3]', text):
+        return [ContentBlock(type=ContentType.TEXT, value=text)]
+
+    # 수식 후보가 없으면 분리 불필요
+    if not re.search(r'[a-zA-Z]', text):
+        return [ContentBlock(type=ContentType.TEXT, value=text)]
+
+    blocks: list[ContentBlock] = []
+    last_end = 0
+
+    for m in _MATH_EXPR_RE.finditer(text):
+        expr = m.group(1).strip()
+        # 너무 긴 영문 단어는 수식이 아님 (예: "정수")
+        if len(expr) > 20:
+            continue
+        # 한글이 포함된 매치는 건너뜀
+        if re.search(r'[\uac00-\ud7a3]', expr):
+            continue
+        # 단독 숫자 1자리는 문맥에 따라 건너뜀 (문제번호 등)
+        # 단, 연산자가 포함되어 있으면 수식으로 처리
+        if expr.isdigit() and len(expr) == 1:
+            continue
+
+        before = text[last_end:m.start()]
+        if before:
+            blocks.append(ContentBlock(type=ContentType.TEXT, value=before))
+        blocks.append(ContentBlock(type=ContentType.EQUATION, value=expr))
+        last_end = m.end()
+
+    after = text[last_end:]
+    if after:
+        blocks.append(ContentBlock(type=ContentType.TEXT, value=after))
+
+    return blocks if len(blocks) > 1 else [ContentBlock(type=ContentType.TEXT, value=text)]
+
+
 def _split_inline_latex(text: str) -> list[ContentBlock]:
     """텍스트에서 $...$ 인라인 LaTeX를 분리하여 ContentBlock 리스트로 반환."""
     blocks: list[ContentBlock] = []
@@ -183,6 +260,37 @@ def _split_inline_latex(text: str) -> list[ContentBlock]:
         last_end = m.end()
 
     # 마지막 텍스트
+    after = text[last_end:]
+    if after:
+        blocks.append(ContentBlock(type=ContentType.TEXT, value=after))
+
+    return blocks if blocks else [ContentBlock(type=ContentType.TEXT, value=text)]
+
+
+# __밑줄__ 마크업 감지 패턴
+_UNDERLINE_RE = re.compile(r"__(.+?)__")
+
+
+def _split_underline_markup(text: str) -> list[ContentBlock]:
+    """텍스트에서 __밑줄__ 마크업을 분리하여 ContentBlock 리스트로 반환.
+
+    예: "옳지 __않은__ 것은?"
+    → text("옳지 ") + text("않은", underline=True) + text(" 것은?")
+    """
+    blocks: list[ContentBlock] = []
+    last_end = 0
+
+    for m in _UNDERLINE_RE.finditer(text):
+        before = text[last_end:m.start()]
+        if before:
+            blocks.append(ContentBlock(type=ContentType.TEXT, value=before))
+        inner = m.group(1)
+        if inner:
+            blocks.append(
+                ContentBlock(type=ContentType.TEXT, value=inner, underline=True)
+            )
+        last_end = m.end()
+
     after = text[last_end:]
     if after:
         blocks.append(ContentBlock(type=ContentType.TEXT, value=after))

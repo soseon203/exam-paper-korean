@@ -607,6 +607,21 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "알림", "출력 경로를 지정하세요.")
             return
 
+        # 출력 파일 이미 존재 시 경고
+        if Path(output_path).exists():
+            reply = QMessageBox.warning(
+                self,
+                "파일 덮어쓰기 확인",
+                f"이미 같은 이름의 파일이 존재합니다.\n\n"
+                f"{Path(output_path).name}\n\n"
+                f"덮어쓰시겠습니까?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self._log("변환 취소: 파일 덮어쓰기 거부")
+                return
+
         # 출력 디렉토리 생성
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 

@@ -28,7 +28,7 @@ def get_output_dir() -> Path:
 
 
 # Claude 모델 설정
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLAUDE_MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "8192"))
 
 # PDF 변환 DPI

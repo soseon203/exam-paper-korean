@@ -45,6 +45,8 @@ CIRCLE_NUMBERS = {1: "\u2460", 2: "\u2461", 3: "\u2462", 4: "\u2463", 5: "\u2464
 _RIGHT_ALIGN_PR_ID = "100"
 # 가운데정렬 문단 속성 ID (제목용)
 _CENTER_ALIGN_PR_ID = "101"
+# 밑줄 문자 속성 ID (강조용, 기존 charPr 0~6 다음 순번)
+_UNDERLINE_CHAR_PR_ID = "7"
 
 
 def _qn(prefix: str, local: str) -> str:
@@ -399,7 +401,7 @@ class HWPXWriter:
 
         # 6. 수정된 section0.xml을 ZIP에 다시 기록
         new_section_bytes = etree.tostring(
-            root, xml_declaration=True, encoding="UTF-8", standalone=True
+            root, xml_declaration=True, encoding="UTF-8"
         )
         self._replace_in_zip(output_path, "Contents/section0.xml", new_section_bytes)
 
@@ -429,23 +431,27 @@ class HWPXWriter:
         shutil.move(str(temp_path), str(zip_path))
 
     def _add_title_paragraph(self, sec_elem: etree._Element, title: str):
-        """제목 문단 추가 (가운데 정렬)."""
-        p_elem = self._create_paragraph(
-            sec_elem, para_pr_id=_CENTER_ALIGN_PR_ID
-        )
-        run = self._create_run(p_elem, char_pr_id="1")  # Bold style
-        self._set_run_text(run, title)
+        """제목 문단 추가 (가운데 정렬).
+
+        줄바꿈(\n)이 포함된 경우 각 줄을 별도 문단으로 분리합니다.
+        """
+        lines = title.split("\n")
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            p_elem = self._create_paragraph(
+                sec_elem, para_pr_id=_CENTER_ALIGN_PR_ID
+            )
+            run = self._create_run(p_elem, char_pr_id="1")  # Bold style
+            self._set_run_text(run, line)
 
         # 빈 줄 (제목과 본문 사이 간격)
         self._create_paragraph(sec_elem)
 
     def _write_page(self, sec_elem: etree._Element, page: ExamPage):
         """한 페이지 내용을 섹션에 삽입."""
-        # 페이지 헤더 (2페이지 이후)
-        if page.header_text and page.page_number > 1:
-            p_elem = self._create_paragraph(sec_elem)
-            run = self._create_run(p_elem)
-            self._set_run_text(run, page.header_text)
+        # 페이지 헤더(학교명 등)는 출력하지 않음 — 반복되는 식별 정보이므로 생략
 
         # 서술형 구분 감지 — 객관식 뒤 서술형이 시작되면 구분선 삽입
         prev_was_mc = False
@@ -525,13 +531,10 @@ class HWPXWriter:
         score: int,
         leading_space: bool = True,
     ):
-        """배점을 [N점] 형태로 삽입 (숫자는 수식 처리)."""
-        prefix = " [" if leading_space else "["
+        """배점을 [N점] 형태로 삽입."""
+        score_text = f" [{score}점]" if leading_space else f"[{score}점]"
         run = self._create_run(p_elem)
-        self._set_run_text(run, prefix)
-        self._insert_equation(p_elem, str(score))
-        run = self._create_run(p_elem)
-        self._set_run_text(run, "점]")
+        self._set_run_text(run, score_text)
 
     @staticmethod
     def _estimate_last_line_width(question: Question) -> int:
@@ -633,7 +636,8 @@ class HWPXWriter:
     ):
         """콘텐츠 블록을 삽입."""
         if block.type == ContentType.TEXT:
-            run = self._create_run(current_para)
+            char_pr = _UNDERLINE_CHAR_PR_ID if block.underline else "0"
+            run = self._create_run(current_para, char_pr_id=char_pr)
             self._set_run_text(run, block.value)
 
         elif block.type == ContentType.EQUATION:
@@ -644,6 +648,163 @@ class HWPXWriter:
             # 블록 수식: 새 문단에 삽입
             eq_para = self._create_paragraph(sec_elem)
             self._insert_equation(eq_para, block.value)
+
+        elif block.type == ContentType.TABLE:
+            # 표: 새 문단에 삽입
+            if block.rows:
+                self._write_table(sec_elem, block.rows)
+
+    def _write_table(
+        self,
+        sec_elem: etree._Element,
+        rows: list[list[str]],
+    ):
+        """표(격자)를 HWPX 네이티브 테이블로 삽입.
+
+        Args:
+            sec_elem: 섹션 요소
+            rows: 2D 문자열 배열 (rows[행][열])
+        """
+        if not rows:
+            return
+
+        row_cnt = len(rows)
+        col_cnt = max(len(r) for r in rows) if rows else 1
+
+        # 테이블 폭·높이 (hwpunit)
+        TABLE_WIDTH = 42520  # 전체 줄 너비
+        ROW_HEIGHT = 1200  # 행 높이
+        CELL_MARGIN = 56  # 셀 내부 여백
+        col_width = TABLE_WIDTH // col_cnt
+        table_height = ROW_HEIGHT * row_cnt
+
+        # 테이블을 포함할 문단 생성
+        p_elem = self._create_paragraph(sec_elem)
+        run = etree.SubElement(p_elem, _qn("hp", "run"))
+        run.set("charPrIDRef", "0")
+
+        # <hp:tbl> 요소
+        tbl = etree.SubElement(run, _qn("hp", "tbl"))
+        tbl.set("id", _random_id())
+        tbl.set("zOrder", "0")
+        tbl.set("numberingType", "TABLE")
+        tbl.set("textWrap", "TOP_AND_BOTTOM")
+        tbl.set("textFlow", "BOTH_SIDES")
+        tbl.set("lock", "0")
+        tbl.set("dropcapstyle", "None")
+        tbl.set("pageBreak", "CELL")
+        tbl.set("repeatHeader", "0")
+        tbl.set("rowCnt", str(row_cnt))
+        tbl.set("colCnt", str(col_cnt))
+        tbl.set("cellSpacing", "0")
+        tbl.set("borderFillIDRef", "3")
+        tbl.set("noAdjust", "0")
+
+        # <hp:sz> 테이블 크기
+        sz = etree.SubElement(tbl, _qn("hp", "sz"))
+        sz.set("width", str(TABLE_WIDTH))
+        sz.set("widthRelTo", "ABSOLUTE")
+        sz.set("height", str(table_height))
+        sz.set("heightRelTo", "ABSOLUTE")
+        sz.set("protect", "0")
+
+        # <hp:pos> 위치 — 글자처럼 취급
+        pos = etree.SubElement(tbl, _qn("hp", "pos"))
+        pos.set("treatAsChar", "1")
+        pos.set("affectLSpacing", "0")
+        pos.set("flowWithText", "1")
+        pos.set("allowOverlap", "0")
+        pos.set("holdAnchorAndSO", "0")
+        pos.set("vertRelTo", "PARA")
+        pos.set("horzRelTo", "COLUMN")
+        pos.set("vertAlign", "TOP")
+        pos.set("horzAlign", "LEFT")
+        pos.set("vertOffset", "0")
+        pos.set("horzOffset", "0")
+
+        # <hp:outMargin>, <hp:inMargin>
+        for margin_name in ("outMargin", "inMargin"):
+            m = etree.SubElement(tbl, _qn("hp", margin_name))
+            m.set("left", "0")
+            m.set("right", "0")
+            m.set("top", "0")
+            m.set("bottom", "0")
+
+        # 행/열 생성
+        for row_idx, row_data in enumerate(rows):
+            tr = etree.SubElement(tbl, _qn("hp", "tr"))
+
+            # 열 수 맞추기 (부족한 열은 빈 문자열로)
+            padded_row = list(row_data) + [""] * (col_cnt - len(row_data))
+
+            for col_idx, cell_text in enumerate(padded_row):
+                tc = etree.SubElement(tr, _qn("hp", "tc"))
+                tc.set("name", "")
+                tc.set("header", "0")
+                tc.set("hasMargin", "0")
+                tc.set("protect", "0")
+                tc.set("editable", "0")
+                tc.set("dirty", "0")
+                tc.set("borderFillIDRef", "3")
+
+                # <hp:subList> — 셀 내용 컨테이너
+                sub_list = etree.SubElement(tc, _qn("hp", "subList"))
+                sub_list.set("id", "")
+                sub_list.set("textDirection", "HORIZONTAL")
+                sub_list.set("lineWrap", "BREAK")
+                sub_list.set("vertAlign", "CENTER")
+                sub_list.set("linkListIDRef", "0")
+                sub_list.set("linkListNextIDRef", "0")
+                sub_list.set("textWidth", "0")
+                sub_list.set("textHeight", "0")
+                sub_list.set("hasTextRef", "0")
+                sub_list.set("hasNumRef", "0")
+
+                # 셀 내 문단
+                cell_p = etree.SubElement(sub_list, _qn("hp", "p"))
+                cell_p.set("id", _random_id())
+                cell_p.set("paraPrIDRef", "0")
+                cell_p.set("styleIDRef", "0")
+                cell_p.set("pageBreak", "0")
+                cell_p.set("columnBreak", "0")
+                cell_p.set("merged", "0")
+
+                cell_run = etree.SubElement(cell_p, _qn("hp", "run"))
+                cell_run.set("charPrIDRef", "0")
+                cell_t = etree.SubElement(cell_run, _qn("hp", "t"))
+                cell_t.text = cell_text if cell_text else ""
+
+                # linesegarray
+                lsa = etree.SubElement(cell_p, _qn("hp", "linesegarray"))
+                ls = etree.SubElement(lsa, _qn("hp", "lineseg"))
+                ls.set("textpos", "0")
+                ls.set("vertpos", "0")
+                ls.set("vertsize", "1000")
+                ls.set("textheight", "1000")
+                ls.set("baseline", "850")
+                ls.set("spacing", "600")
+                ls.set("horzpos", "0")
+                ls.set("horzsize", str(col_width))
+                ls.set("flags", "393216")
+
+                # 셀 속성
+                cell_addr = etree.SubElement(tc, _qn("hp", "cellAddr"))
+                cell_addr.set("colAddr", str(col_idx))
+                cell_addr.set("rowAddr", str(row_idx))
+
+                cell_span = etree.SubElement(tc, _qn("hp", "cellSpan"))
+                cell_span.set("colSpan", "1")
+                cell_span.set("rowSpan", "1")
+
+                cell_sz = etree.SubElement(tc, _qn("hp", "cellSz"))
+                cell_sz.set("width", str(col_width))
+                cell_sz.set("height", str(ROW_HEIGHT))
+
+                cell_margin = etree.SubElement(tc, _qn("hp", "cellMargin"))
+                cell_margin.set("left", str(CELL_MARGIN))
+                cell_margin.set("right", str(CELL_MARGIN))
+                cell_margin.set("top", str(CELL_MARGIN))
+                cell_margin.set("bottom", str(CELL_MARGIN))
 
     def _insert_equation(self, p_elem: etree._Element, latex: str):
         """수식을 문단에 삽입.
@@ -800,55 +961,72 @@ class HWPXWriter:
 
     @staticmethod
     def _inject_right_align_parapr(zip_path: Path):
-        """header.xml에 우측정렬·가운데정렬 문단 속성(paraPr)을 추가."""
+        """header.xml에 우측정렬·가운데정렬 문단 속성 + 밑줄 문자 속성을 추가."""
         HH = "http://www.hancom.co.kr/hwpml/2011/head"
 
         with zipfile.ZipFile(str(zip_path), "r") as zf:
             header_bytes = zf.read("Contents/header.xml")
 
         root = etree.fromstring(header_bytes)
-
-        para_props = root.find(f".//{{{HH}}}paraProperties")
-        if para_props is None:
-            return
-
-        base_pr = para_props.find(f"{{{HH}}}paraPr[@id='0']")
-        if base_pr is None:
-            return
-
         import copy
-        added = 0
+        modified = False
 
-        # 추가할 정렬 속성 목록: (ID, 정렬 방향)
-        align_defs = [
-            (_RIGHT_ALIGN_PR_ID, "RIGHT"),
-            (_CENTER_ALIGN_PR_ID, "CENTER"),
-        ]
+        # ── paraPr (문단 속성) 추가 ──
+        para_props = root.find(f".//{{{HH}}}paraProperties")
+        if para_props is not None:
+            base_pr = para_props.find(f"{{{HH}}}paraPr[@id='0']")
+            if base_pr is not None:
+                existing_ids = {
+                    pp.get("id")
+                    for pp in para_props.findall(f"{{{HH}}}paraPr")
+                }
+                added = 0
+                for pr_id, align_dir in [
+                    (_RIGHT_ALIGN_PR_ID, "RIGHT"),
+                    (_CENTER_ALIGN_PR_ID, "CENTER"),
+                ]:
+                    if pr_id in existing_ids:
+                        continue
+                    new_pr = copy.deepcopy(base_pr)
+                    new_pr.set("id", pr_id)
+                    align_elem = new_pr.find(f"{{{HH}}}align")
+                    if align_elem is not None:
+                        align_elem.set("horizontal", align_dir)
+                    para_props.append(new_pr)
+                    added += 1
+                if added:
+                    old_cnt = int(para_props.get("itemCnt", "0"))
+                    para_props.set("itemCnt", str(old_cnt + added))
+                    modified = True
 
-        existing_ids = {
-            pp.get("id")
-            for pp in para_props.findall(f"{{{HH}}}paraPr")
-        }
+        # ── charPr (문자 속성) 추가: 밑줄 스타일 ──
+        char_props = root.find(f".//{{{HH}}}charProperties")
+        if char_props is not None:
+            base_char = char_props.find(f"{{{HH}}}charPr[@id='0']")
+            if base_char is not None:
+                existing_char_ids = {
+                    cp.get("id")
+                    for cp in char_props.findall(f"{{{HH}}}charPr")
+                }
+                if _UNDERLINE_CHAR_PR_ID not in existing_char_ids:
+                    ul_pr = copy.deepcopy(base_char)
+                    ul_pr.set("id", _UNDERLINE_CHAR_PR_ID)
+                    # underline 요소 수정
+                    ul_elem = ul_pr.find(f"{{{HH}}}underline")
+                    if ul_elem is not None:
+                        ul_elem.set("type", "BOTTOM")
+                        ul_elem.set("shape", "SOLID")
+                        ul_elem.set("color", "#000000")
+                    char_props.append(ul_pr)
+                    old_cnt = int(char_props.get("itemCnt", "0"))
+                    char_props.set("itemCnt", str(old_cnt + 1))
+                    modified = True
 
-        for pr_id, align_dir in align_defs:
-            if pr_id in existing_ids:
-                continue
-            new_pr = copy.deepcopy(base_pr)
-            new_pr.set("id", pr_id)
-            align_elem = new_pr.find(f"{{{HH}}}align")
-            if align_elem is not None:
-                align_elem.set("horizontal", align_dir)
-            para_props.append(new_pr)
-            added += 1
-
-        if added == 0:
+        if not modified:
             return
-
-        old_cnt = int(para_props.get("itemCnt", "0"))
-        para_props.set("itemCnt", str(old_cnt + added))
 
         new_header = etree.tostring(
-            root, xml_declaration=True, encoding="UTF-8", standalone=True
+            root, xml_declaration=True, encoding="UTF-8"
         )
         HWPXWriter._replace_in_zip(zip_path, "Contents/header.xml", new_header)
 

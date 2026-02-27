@@ -11,6 +11,7 @@ class ContentType(Enum):
     EQUATION = "equation"          # 인라인 수식
     EQUATION_BLOCK = "equation_block"  # 블록(독립행) 수식
     IMAGE = "image"
+    TABLE = "table"                # 표 (격자/그리드)
 
 
 @dataclass
@@ -19,6 +20,8 @@ class ContentBlock:
     type: ContentType
     value: str  # TEXT: 텍스트, EQUATION/EQUATION_BLOCK: LaTeX, IMAGE: 파일경로
     hwp_equation: Optional[str] = None  # 변환된 HWP 수식 스크립트
+    underline: bool = False  # 밑줄 강조 여부
+    rows: Optional[list[list[str]]] = None  # TABLE: 2D 문자열 배열
 
     @property
     def is_equation(self) -> bool:
