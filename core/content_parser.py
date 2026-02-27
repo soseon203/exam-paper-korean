@@ -52,6 +52,9 @@ def _parse_question(q_data: dict) -> Question:
         elif result:
             question.contents.append(result)
 
+    # 쉼표로 구분된 독립 수식 분리 (안전 폴백)
+    question.contents = _split_comma_equations(question.contents)
+
     # 선택지
     for choice_data in q_data.get("choices", []):
         choice = _parse_choice(choice_data)
@@ -79,6 +82,9 @@ def _parse_choice(choice_data: dict) -> Choice | None:
             choice.contents.extend(result)
         elif result:
             choice.contents.append(result)
+
+    # 쉼표로 구분된 독립 수식 분리
+    choice.contents = _split_comma_equations(choice.contents)
 
     return choice
 
@@ -114,6 +120,50 @@ def _parse_content_block(block_data: dict) -> ContentBlock | None:
             return split  # type: ignore[return-value]
 
     return ContentBlock(type=content_type, value=value)
+
+
+def _split_comma_equations(blocks: list[ContentBlock]) -> list[ContentBlock]:
+    """쉼표로 구분된 독립 수식을 개별 블록으로 분리.
+
+    예: "A=2^6, B=3^6" → equation("A=2^6") + text(", ") + equation("B=3^6")
+    괄호·중괄호 안의 쉼표는 분리하지 않습니다.
+    """
+    result: list[ContentBlock] = []
+    for block in blocks:
+        if block.type == ContentType.EQUATION and "," in block.value:
+            parts = _split_at_top_level_commas(block.value)
+            valid = [p.strip() for p in parts if p.strip()]
+            if len(valid) > 1:
+                for i, part in enumerate(valid):
+                    if i > 0:
+                        result.append(
+                            ContentBlock(type=ContentType.TEXT, value=", ")
+                        )
+                    result.append(
+                        ContentBlock(type=ContentType.EQUATION, value=part)
+                    )
+                continue
+        result.append(block)
+    return result
+
+
+def _split_at_top_level_commas(s: str) -> list[str]:
+    """최상위 레벨의 쉼표에서 분리 (괄호·중괄호 안 쉼표 무시)."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for ch in s:
+        if ch in "({[":
+            depth += 1
+        elif ch in ")}]":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(ch)
+    parts.append("".join(current))
+    return parts
 
 
 def _split_inline_latex(text: str) -> list[ContentBlock]:

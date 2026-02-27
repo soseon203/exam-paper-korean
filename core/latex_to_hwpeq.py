@@ -122,7 +122,7 @@ class LaTeXToHWPConverter:
         r"\perp": "BOT",
         r"\parallel": "parallel",
         r"\triangle": "TRIANGLE",
-        r"\square": "SQUARE",
+        r"\square": '"□"',
         r"\circ": "CIRC",
         r"\bullet": "BULLET",
         r"\star": "STAR",

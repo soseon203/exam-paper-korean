@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from PIL import Image
 import anthropic
+
+logger = logging.getLogger(__name__)
 
 from core.pdf_handler import image_to_base64
 from utils.config import get_api_key, CLAUDE_MODEL, CLAUDE_MAX_TOKENS
@@ -60,6 +63,20 @@ EXAM_OCR_PROMPT = """당신은 한국 수학 시험지를 정밀하게 OCR하는
   ]
 }
 ```
+
+## 수식 범위 규칙 (매우 중요!)
+- **equation으로 처리할 것**: 영문 변수(a, b, x, y), 숫자(1, 2, 3), 수학 기호(+, -, =, ×, ÷), 분수, 지수, 루트, 적분, 시그마 등 순수 수학 표현만
+- **text로 처리할 것**: 한글 텍스트, 괄호와 그 안의 한글 (예: "(는 경우)", "(가)", "(나)"), 조사, 문장부호
+- 하나의 문장 안에 수식과 텍스트가 섞여 있으면 **반드시 분리**하세요.
+  - 올바른 예: {"type":"equation","value":"a = 0"}, {"type":"text","value":"이고 "}, {"type":"equation","value":"b"}, {"type":"text","value":"는 경우의 꼴로 나타낼 수 있다."}
+  - 잘못된 예: {"type":"equation","value":"a = 0, a, b는 경우의 꼴로"}
+- 모든 숫자는 수식으로 처리하세요. 예: "2" → {"type":"equation","value":"2"}
+- 단, 문제 번호(1., 2.)만 text로 처리합니다. 배점 숫자도 수식입니다.
+- 쉼표(,)로 구분된 여러 독립 수식은 개별 equation 블록 + 텍스트 쉼표로 분리하세요.
+  - 올바른 예: {"type":"equation","value":"A=2^6"}, {"type":"text","value":", "}, {"type":"equation","value":"B=3^6"}
+  - 잘못된 예: {"type":"equation","value":"A=2^6, B=3^6, C=5^4"}
+- 순환소수 순환마디(점)는 LaTeX \\dot{}으로 표현하세요. 예: 0.\\dot{1}3\\dot{6}
+- □(빈칸) 기호가 있으면 수식으로: {"type":"equation","value":"\\square"}
 
 ## 주의사항
 - 한글 텍스트는 정확하게 보존하세요.
@@ -117,8 +134,9 @@ class OCREngine:
         return self._extract_json(response_text)
 
     def _extract_json(self, text: str) -> dict:
-        """응답에서 JSON 추출."""
+        """응답에서 JSON 추출 (LaTeX 수식이 포함된 경우도 처리)."""
         import json
+        import re
 
         # JSON 블록 추출 시도
         text = text.strip()
@@ -139,6 +157,48 @@ class OCREngine:
             if brace_start != -1:
                 text = text[brace_start:]
 
+        # trailing comma 제거
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # 복구 시도: value 내부의 이스케이프 안 된 역슬래시 처리
+        # JSON 문자열 안의 \를 \\로 이스케이프 (이미 이스케이프된 것 제외)
+        fixed = re.sub(
+            r'(?<=: ")(.*?)(?=")',
+            lambda m: m.group(0).replace("\\", "\\\\")
+                .replace("\\\\n", "\\n")
+                .replace("\\\\t", "\\t")
+                .replace('\\\\"', '\\"')
+                .replace("\\\\\\\\", "\\\\"),
+            text,
+            flags=re.DOTALL,
+        )
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+
+        # 최종 시도: 줄 단위로 문제 위치 파악 후 수동 수정
+        logger.warning("JSON 파싱 실패, 줄 단위 복구 시도")
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            # "value" 필드에서 이스케이프 안 된 큰따옴표 수정
+            # "value": "some "broken" text" 패턴
+            match = re.match(r'^(\s*"value"\s*:\s*")(.*)(")(.*)$', line)
+            if match:
+                inner = match.group(2)
+                # 내부 큰따옴표 이스케이프
+                inner = inner.replace('\\"', '\x00')
+                inner = inner.replace('"', '\\"')
+                inner = inner.replace('\x00', '\\"')
+                lines[i] = match.group(1) + inner + match.group(3) + match.group(4)
+
+        text = "\n".join(lines)
+        text = re.sub(r",\s*([}\]])", r"\1", text)
         return json.loads(text)
 
     def validate_api_key(self) -> bool:

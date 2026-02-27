@@ -43,6 +43,8 @@ CIRCLE_NUMBERS = {1: "\u2460", 2: "\u2461", 3: "\u2462", 4: "\u2463", 5: "\u2464
 
 # 우측정렬 문단 속성 ID (배점용, header.xml에 동적 추가)
 _RIGHT_ALIGN_PR_ID = "100"
+# 가운데정렬 문단 속성 ID (제목용)
+_CENTER_ALIGN_PR_ID = "101"
 
 
 def _qn(prefix: str, local: str) -> str:
@@ -61,7 +63,7 @@ _SYMBOL_KEYWORDS = [
     # latex_to_hwpeq.py가 생성하는 대문자 키워드
     "PLUSMINUS", "MINUSPLUS", "SMALLUNION", "SMALLINTER",
     "APPROX", "PROPTO", "LAPLACE", "BULLET", "TRIANGLE",
-    "DIAMOND", "SQUARE",
+    "DIAMOND",
     "EQUIV", "SIMEQ", "ASYMP", "DOTEQ",
     "TIMES", "CDOT", "EXIST",
     "WEDGE", "LNOT", "OPLUS", "OTIMES",
@@ -178,7 +180,7 @@ def _measure_latex_size(latex: str) -> tuple[int, int] | None:
             if "\\sqrt" in latex:
                 h = max(h, 3200)
 
-            return (max(w, 800), h)
+            return (max(w, 400), h)
 
         # 분수 없는 경우: 직접 측정
         w = mpl_width(latex)
@@ -186,7 +188,7 @@ def _measure_latex_size(latex: str) -> tuple[int, int] | None:
         if "\\sqrt" in latex:
             h = 1600
 
-        return (max(w, 800), h)
+        return (max(w, 400), h)
     except Exception:
         return None
 
@@ -207,7 +209,7 @@ def _estimate_equation_size(hwp_eq_script: str) -> tuple[int, int]:
 
     CHAR_WIDTH = 650
     PADDING = 200
-    width = max(int(visible_len * CHAR_WIDTH) + PADDING, 800)
+    width = max(int(visible_len * CHAR_WIDTH) + PADDING, 400)
 
     if has_fraction:
         width = int(width * 1.4)
@@ -427,25 +429,45 @@ class HWPXWriter:
         shutil.move(str(temp_path), str(zip_path))
 
     def _add_title_paragraph(self, sec_elem: etree._Element, title: str):
-        """제목 문단 추가."""
-        p_elem = self._create_paragraph(sec_elem)
+        """제목 문단 추가 (가운데 정렬)."""
+        p_elem = self._create_paragraph(
+            sec_elem, para_pr_id=_CENTER_ALIGN_PR_ID
+        )
         run = self._create_run(p_elem, char_pr_id="1")  # Bold style
         self._set_run_text(run, title)
 
+        # 빈 줄 (제목과 본문 사이 간격)
+        self._create_paragraph(sec_elem)
+
     def _write_page(self, sec_elem: etree._Element, page: ExamPage):
         """한 페이지 내용을 섹션에 삽입."""
-        # 페이지 헤더
+        # 페이지 헤더 (2페이지 이후)
         if page.header_text and page.page_number > 1:
             p_elem = self._create_paragraph(sec_elem)
             run = self._create_run(p_elem)
             self._set_run_text(run, page.header_text)
 
-        # 문제별 삽입
+        # 서술형 구분 감지 — 객관식 뒤 서술형이 시작되면 구분선 삽입
+        prev_was_mc = False
         for question in page.questions:
+            is_essay = not question.choices
+            if is_essay and prev_was_mc:
+                # 객관식→서술형 전환 시 구분 표시
+                sep_para = self._create_paragraph(
+                    sec_elem, para_pr_id=_CENTER_ALIGN_PR_ID
+                )
+                run = self._create_run(sep_para)
+                self._set_run_text(
+                    run, "──────────── 서술형 ────────────"
+                )
+                self._create_paragraph(sec_elem)
             self._write_question(sec_elem, question)
+            prev_was_mc = bool(question.choices)
 
     def _write_question(self, sec_elem: etree._Element, question: Question):
         """문제 하나를 삽입."""
+        is_essay = not question.choices
+
         # 문제 본문 첫 줄에 번호 포함
         p_elem = self._create_paragraph(sec_elem)
 
@@ -457,36 +479,151 @@ class HWPXWriter:
         for block in question.contents:
             self._write_content_block(sec_elem, p_elem, block)
 
-        # 배점을 별도 우측정렬 문단으로 추가
+        # 배점 추가: 공간 있으면 같은 줄, 없으면 별도 우측정렬 문단
         if question.score:
-            score_para = self._create_paragraph(
-                sec_elem, para_pr_id=_RIGHT_ALIGN_PR_ID
-            )
-            run = self._create_run(score_para)
-            self._set_run_text(run, f"[{question.score}점]")
+            line_width = self._estimate_last_line_width(question)
+            LINE_CAPACITY = 42520
+            SCORE_WIDTH = 3500  # [수식+점] 예상 너비
+            if line_width + SCORE_WIDTH < LINE_CAPACITY:
+                self._write_score_inline(p_elem, question.score)
+            else:
+                score_para = self._create_paragraph(
+                    sec_elem, para_pr_id=_RIGHT_ALIGN_PR_ID
+                )
+                self._write_score_inline(
+                    score_para, question.score, leading_space=False
+                )
 
-        # 선택지
-        for choice in question.choices:
-            self._write_choice(sec_elem, choice)
+        # 선택지 (객관식)
+        if question.choices:
+            self._write_choices(sec_elem, question.choices)
 
         # 소문항
         for sub in question.sub_questions:
             self._write_question(sec_elem, sub)
 
+        # 서술형: 풀이 공간 추가
+        if is_essay:
+            self._write_essay_space(sec_elem)
+
         # 문제 간 빈 줄
         self._create_paragraph(sec_elem)
 
-    def _write_choice(self, sec_elem: etree._Element, choice: Choice):
-        """선택지 하나를 삽입."""
+    def _write_essay_space(self, sec_elem: etree._Element):
+        """서술형 문제 아래에 풀이 공간 삽입."""
+        # "풀이)" 라벨
         p_elem = self._create_paragraph(sec_elem)
+        run = self._create_run(p_elem, char_pr_id="1")
+        self._set_run_text(run, "풀이)")
+        # 빈 줄 6줄 (답안 작성 공간)
+        for _ in range(6):
+            self._create_paragraph(sec_elem)
 
-        # 원문자 번호
+    def _write_score_inline(
+        self,
+        p_elem: etree._Element,
+        score: int,
+        leading_space: bool = True,
+    ):
+        """배점을 [N점] 형태로 삽입 (숫자는 수식 처리)."""
+        prefix = " [" if leading_space else "["
+        run = self._create_run(p_elem)
+        self._set_run_text(run, prefix)
+        self._insert_equation(p_elem, str(score))
+        run = self._create_run(p_elem)
+        self._set_run_text(run, "점]")
+
+    @staticmethod
+    def _estimate_last_line_width(question: Question) -> int:
+        """문제 본문의 마지막 줄 너비를 hwpunit으로 추정.
+
+        텍스트가 줄바꿈되면 마지막 줄만 계산합니다.
+        한글 1글자 ≈ 1000 hwpunit (10pt), 영문/숫자 ≈ 500 hwpunit.
+        """
+        LINE_CAPACITY = 42520
+        # 번호 부분: "1. " → 약 1500
+        width = 1500
+        for block in question.contents:
+            if block.type == ContentType.TEXT:
+                for ch in block.value:
+                    if ord(ch) > 0x7F:
+                        width += 1000
+                    else:
+                        width += 500
+            elif block.type == ContentType.EQUATION:
+                size = _measure_latex_size(block.value)
+                if size:
+                    width += size[0]
+                else:
+                    width += len(block.value) * 500
+            elif block.type == ContentType.EQUATION_BLOCK:
+                width = 0  # 블록 수식 이후 새 줄
+        # 줄바꿈 시뮬레이션: 마지막 줄의 너비만 반환
+        return width % LINE_CAPACITY if width > LINE_CAPACITY else width
+
+    def _write_choices(
+        self, sec_elem: etree._Element, choices: list[Choice]
+    ):
+        """선택지 목록을 삽입. 짧은 보기는 한 줄에 2~3개씩 배치."""
+        # 각 보기의 예상 너비 계산
+        widths = [self._estimate_choice_width(c) for c in choices]
+        LINE_CAPACITY = 42520
+        INDENT = 1000  # 들여쓰기
+
+        # 모든 보기가 짧으면 한 줄에 여러 개 배치
+        max_width = max(widths) if widths else 0
+        items_per_line = 1
+        if max_width < 6000:
+            items_per_line = 3  # 매우 짧은 보기 → 3열
+        elif max_width < 12000:
+            items_per_line = 2  # 짧은 보기 → 2열
+
+        # 수식 블록이 포함된 보기가 있으면 1열로
+        for c in choices:
+            for block in c.contents:
+                if block.type == ContentType.EQUATION_BLOCK:
+                    items_per_line = 1
+                    break
+
+        if items_per_line == 1:
+            for choice in choices:
+                self._write_single_choice(sec_elem, choice)
+        else:
+            # 여러 개씩 한 줄에 배치
+            col_width = (LINE_CAPACITY - INDENT) // items_per_line
+            for i in range(0, len(choices), items_per_line):
+                batch = choices[i:i + items_per_line]
+                p_elem = self._create_paragraph(sec_elem)
+                for j, choice in enumerate(batch):
+                    circle = CIRCLE_NUMBERS.get(choice.number, f"({choice.number})")
+                    prefix = "  " if j == 0 else "\t"
+                    run = self._create_run(p_elem)
+                    self._set_run_text(run, f"{prefix}{circle} ")
+                    for block in choice.contents:
+                        self._write_content_block(sec_elem, p_elem, block)
+
+    def _write_single_choice(self, sec_elem: etree._Element, choice: Choice):
+        """선택지 하나를 독립 줄에 삽입."""
+        p_elem = self._create_paragraph(sec_elem)
         circle = CIRCLE_NUMBERS.get(choice.number, f"({choice.number})")
         run = self._create_run(p_elem)
         self._set_run_text(run, f"  {circle} ")
-
         for block in choice.contents:
             self._write_content_block(sec_elem, p_elem, block)
+
+    @staticmethod
+    def _estimate_choice_width(choice: Choice) -> int:
+        """선택지 하나의 텍스트 너비를 hwpunit으로 추정."""
+        width = 2000  # 원문자 + 여백
+        for block in choice.contents:
+            if block.type == ContentType.TEXT:
+                for ch in block.value:
+                    width += 1000 if ord(ch) > 0x7F else 500
+            elif block.type == ContentType.EQUATION:
+                width += max(len(block.value) * 600, 1500)
+            elif block.type == ContentType.EQUATION_BLOCK:
+                return 99999  # 블록 수식 → 반드시 단독 줄
+        return width
 
     def _write_content_block(
         self,
@@ -663,48 +800,52 @@ class HWPXWriter:
 
     @staticmethod
     def _inject_right_align_parapr(zip_path: Path):
-        """header.xml에 우측정렬 문단 속성(paraPr)을 추가.
-
-        배점 표시용 RIGHT 정렬 paraPr를 header.xml의 paraProperties에 추가합니다.
-        """
+        """header.xml에 우측정렬·가운데정렬 문단 속성(paraPr)을 추가."""
         HH = "http://www.hancom.co.kr/hwpml/2011/head"
-        HC = "http://www.hancom.co.kr/hwpml/2011/core"
-        HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 
         with zipfile.ZipFile(str(zip_path), "r") as zf:
             header_bytes = zf.read("Contents/header.xml")
 
         root = etree.fromstring(header_bytes)
 
-        # paraProperties 찾기
         para_props = root.find(f".//{{{HH}}}paraProperties")
         if para_props is None:
             return
 
-        # 이미 같은 ID가 있으면 스킵
-        for pp in para_props.findall(f"{{{HH}}}paraPr"):
-            if pp.get("id") == _RIGHT_ALIGN_PR_ID:
-                return
-
-        # 기존 paraPr id=0을 기반으로 복제 후 정렬만 RIGHT로 변경
         base_pr = para_props.find(f"{{{HH}}}paraPr[@id='0']")
         if base_pr is None:
             return
 
         import copy
-        new_pr = copy.deepcopy(base_pr)
-        new_pr.set("id", _RIGHT_ALIGN_PR_ID)
+        added = 0
 
-        # align 요소의 horizontal을 RIGHT로 변경
-        align_elem = new_pr.find(f"{{{HH}}}align")
-        if align_elem is not None:
-            align_elem.set("horizontal", "RIGHT")
+        # 추가할 정렬 속성 목록: (ID, 정렬 방향)
+        align_defs = [
+            (_RIGHT_ALIGN_PR_ID, "RIGHT"),
+            (_CENTER_ALIGN_PR_ID, "CENTER"),
+        ]
 
-        para_props.append(new_pr)
+        existing_ids = {
+            pp.get("id")
+            for pp in para_props.findall(f"{{{HH}}}paraPr")
+        }
 
-        # itemCnt 업데이트
+        for pr_id, align_dir in align_defs:
+            if pr_id in existing_ids:
+                continue
+            new_pr = copy.deepcopy(base_pr)
+            new_pr.set("id", pr_id)
+            align_elem = new_pr.find(f"{{{HH}}}align")
+            if align_elem is not None:
+                align_elem.set("horizontal", align_dir)
+            para_props.append(new_pr)
+            added += 1
+
+        if added == 0:
+            return
+
         old_cnt = int(para_props.get("itemCnt", "0"))
-        para_props.set("itemCnt", str(old_cnt + 1))
+        para_props.set("itemCnt", str(old_cnt + added))
 
         new_header = etree.tostring(
             root, xml_declaration=True, encoding="UTF-8", standalone=True
