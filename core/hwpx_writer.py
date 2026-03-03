@@ -98,7 +98,69 @@ _STRUCT_KEYWORDS = [
     "from", "left", "right",
     "roman", "bold", "ital",
     "to",
+    # 꾸밈 명령어 (문자 위/아래 기호, 폭에 기여하지 않음)
+    "DOT", "DDOT", "HAT", "BAR", "VEC", "TILDE",
+    "OVERLINE", "UNDERLINE", "ACUTE", "GRAVE",
 ]
+
+# ── HYhwpEQ 폰트 메트릭 (C:\Windows\Fonts\HYHWPEQ.TTF) ───────────
+# unitsPerEm=1024, baseUnit=1000 → hwpunit ≈ font_advance × 0.9766
+
+_HWPEQ_CHAR_WIDTHS: dict[str, int] = {
+    " ": 333,
+    "0": 583, "1": 583, "2": 583, "3": 583, "4": 583,
+    "5": 583, "6": 583, "7": 583, "8": 583, "9": 583,
+    "a": 500, "b": 541, "c": 500, "d": 541, "e": 541, "f": 375,
+    "g": 541, "h": 541, "i": 291, "j": 291, "k": 541, "l": 291,
+    "m": 833, "n": 541, "o": 541, "p": 541, "q": 541, "r": 416,
+    "s": 500, "t": 375, "u": 541, "v": 541, "w": 791, "x": 583,
+    "y": 583, "z": 458,
+    "A": 750, "B": 666, "C": 666, "D": 708, "E": 666, "F": 625,
+    "G": 708, "H": 750, "I": 375, "J": 458, "K": 750, "L": 625,
+    "M": 916, "N": 750, "O": 708, "P": 625, "Q": 708, "R": 666,
+    "S": 625, "T": 750, "U": 750, "V": 708, "W": 958, "X": 666,
+    "Y": 666, "Z": 625,
+    "+": 833, "-": 833, "=": 833, "<": 833, ">": 833,
+    "(": 500, ")": 500, "[": 500, "]": 500,
+    "|": 583, "/": 333, ".": 291, ",": 291, ";": 333, ":": 333,
+    "*": 500, "!": 416, "?": 500, "~": 791, "#": 833,
+}
+
+_HWPEQ_KEYWORD_WIDTHS: dict[str, int] = {
+    "alpha": 500, "beta": 554, "gamma": 444, "delta": 554,
+    "epsilon": 444, "varepsilon": 444, "zeta": 304, "eta": 500,
+    "theta": 554, "vartheta": 500, "iota": 276, "kappa": 526,
+    "lambda": 276, "mu": 833, "nu": 554, "xi": 500,
+    "pi": 554, "rho": 526, "sigma": 390, "tau": 394,
+    "upsilon": 388, "phi": 554, "varphi": 500, "chi": 526,
+    "psi": 721, "omega": 526,
+    "neq": 1000, "leq": 1000, "geq": 1000, "sim": 1000,
+    "approx": 1000, "equiv": 1000, "simeq": 1000, "asymp": 1000,
+    "doteq": 1000, "cong": 1000,
+    "times": 811, "cdot": 1000, "div": 811, "pm": 811, "mp": 811,
+    "cdots": 1000, "ldots": 1000,
+    "wedge": 1000, "vee": 1000, "oplus": 1000, "otimes": 1000,
+    "infty": 1000, "inf": 1000, "in": 1000, "partial": 541,
+    "nabla": 1000, "forall": 1000, "exists": 1000, "emptyset": 1000,
+    "angle": 1000, "prime": 276, "dprime": 400, "bullet": 1000,
+    "therefore": 1000, "because": 1000, "circ": 1000, "star": 1000,
+    "subset": 1000, "supset": 1000, "subseteq": 1000, "supseteq": 1000,
+    "notin": 1000, "parallel": 500,
+    "lnot": 785, "prec": 1000, "succ": 1000, "owns": 1000,
+    "vdash": 1000, "models": 1000,
+    "PLUSMINUS": 811, "MINUSPLUS": 811,
+    "SMALLUNION": 1000, "SMALLINTER": 1000,
+    "APPROX": 1000, "PROPTO": 1000, "LAPLACE": 1000,
+    "BULLET": 1000, "TRIANGLE": 1000, "DIAMOND": 1000,
+    "EQUIV": 1000, "SIMEQ": 1000, "ASYMP": 1000, "DOTEQ": 1000,
+    "TIMES": 811, "CDOT": 1000, "EXIST": 1000,
+    "WEDGE": 1000, "LNOT": 785, "OPLUS": 1000, "OTIMES": 1000,
+    "VDASH": 1000, "MODELS": 1000,
+    "PREC": 1000, "SUCC": 1000, "CONG": 1000, "OWNS": 1000,
+    "CIRC": 1000, "STAR": 1000,
+    "DIV": 811, "LEQ": 1000, "GEQ": 1000, "SIM": 1000,
+    "VEE": 1000, "BOT": 1000, "TOP": 1000,
+}
 
 
 def _extract_latex_brace(s: str) -> tuple[str, str]:
@@ -119,6 +181,77 @@ def _extract_latex_brace(s: str) -> tuple[str, str]:
             if depth == 0:
                 return (s[1:i], s[i + 1 :])
     return (s[1:], "")
+
+
+def _extract_brace_reverse(s: str) -> tuple[str, str]:
+    """문자열 끝에서 역방향으로 {content}를 추출.
+
+    Returns:
+        (content, rest_before_brace)
+    """
+    s = s.rstrip()
+    if not s or s[-1] != "}":
+        return (s, "")
+    depth = 0
+    for i in range(len(s) - 1, -1, -1):
+        if s[i] == "}":
+            depth += 1
+        elif s[i] == "{":
+            depth -= 1
+            if depth == 0:
+                return (s[i + 1 : -1], s[:i].rstrip())
+    return (s[1:], "")
+
+
+def _measure_hwpeq_width(script: str, scale: float = 1.0) -> float:
+    """HWP 수식 스크립트의 렌더링 너비를 HYhwpEQ 폰트 메트릭으로 측정.
+
+    Args:
+        script: HWP 수식 스크립트
+        scale: 크기 비율 (1.0=본문, 0.75=분수, 0.65=첨자)
+
+    Returns:
+        너비 (hwpunit)
+    """
+    s = script
+    width = 0.0
+
+    # 1. 기호 키워드 → 알려진 폭 (긴 이름 먼저)
+    for kw in _SYMBOL_KEYWORDS:
+        while kw in s:
+            s = s.replace(kw, "\x01", 1)
+            width += _HWPEQ_KEYWORD_WIDTHS.get(kw, 500) * scale
+
+    for kw in _LARGE_OP_KEYWORDS:
+        while kw in s:
+            s = s.replace(kw, "\x01", 1)
+            width += 1000 * scale
+
+    # 2. 구조 키워드 + 구문 공백 제거
+    for cmd in _STRUCT_KEYWORDS:
+        s = s.replace(cmd + " ", "")
+        s = s.replace(cmd, "")
+
+    # 3. 위첨자/아래첨자: 65% 축소 크기
+    for m in re.finditer(r"[\^_]\{([^{}]*)\}", s):
+        width += _measure_hwpeq_width(m.group(1), scale * 0.65)
+    s = re.sub(r"[\^_]\{[^{}]*\}", "", s)
+
+    for m in re.finditer(r"[\^_](\S)", s):
+        ch = m.group(1)
+        if ch not in "{}":
+            width += _HWPEQ_CHAR_WIDTHS.get(ch, 500) * scale * 0.65
+    s = re.sub(r"[\^_]\S", "", s)
+
+    # 4. 나머지 문자의 개별 폭 합산
+    for ch in s:
+        if ch in "{}\x01":
+            continue
+        w = _HWPEQ_CHAR_WIDTHS.get(ch, 0)
+        if w > 0:
+            width += w * scale
+
+    return width
 
 
 def _measure_latex_size(latex: str) -> tuple[int, int] | None:
@@ -204,36 +337,58 @@ def _measure_latex_size(latex: str) -> tuple[int, int] | None:
 
 
 def _estimate_equation_size(hwp_eq_script: str) -> tuple[int, int]:
-    """수식 크기 추정 (폴백용, matplotlib 측정 실패 시 사용).
+    """HWP 수식 크기를 HYhwpEQ 폰트 메트릭으로 계산.
 
-    HWP 수식 스크립트에서 가시 문자를 세어 크기를 추정합니다.
-    실제 한컴 기준: 1문자 ≈ 525 hwpunit (baseUnit=1000, font=HYhwpEQ).
+    HYhwpEQ.TTF의 실제 문자 폭을 사용하여 수식 너비를 정확히 계산합니다.
+    분수(over/atop)는 분자·분모를 분리하여 개별 측정합니다.
     """
     has_fraction = "over" in hwp_eq_script or "atop" in hwp_eq_script
     has_sqrt = "sqrt" in hwp_eq_script or "root" in hwp_eq_script
 
     if has_fraction:
-        parts = hwp_eq_script.replace("atop", "over").split("over")
-        visible_len = max(_visual_char_count(p) for p in parts)
+        # 분수 구조 파싱: prefix {분자} over {분모} suffix
+        m = re.search(r"\b(over|atop)\b", hwp_eq_script)
+        if m:
+            before = hwp_eq_script[: m.start()].rstrip()
+            after = hwp_eq_script[m.end() :].lstrip()
+
+            # 분자: before의 마지막 중괄호 그룹
+            if before.endswith("}"):
+                num_content, prefix = _extract_brace_reverse(before)
+            else:
+                num_content, prefix = before, ""
+
+            # 분모: after의 첫 중괄호 그룹
+            if after.startswith("{"):
+                den_content, suffix = _extract_latex_brace(after)
+            else:
+                den_content, suffix = after, ""
+
+            # 분수 내용은 75% 크기로 렌더링
+            FRAC_SCALE = 0.75
+            num_w = _measure_hwpeq_width(num_content, FRAC_SCALE)
+            den_w = _measure_hwpeq_width(den_content, FRAC_SCALE)
+            frac_w = max(num_w, den_w) + 200  # 분수선 양쪽 여백
+
+            prefix_w = _measure_hwpeq_width(prefix) if prefix.strip() else 0
+            suffix_w = _measure_hwpeq_width(suffix) if suffix.strip() else 0
+
+            width = prefix_w + frac_w + suffix_w
+        else:
+            width = _measure_hwpeq_width(hwp_eq_script)
     else:
-        visible_len = _visual_char_count(hwp_eq_script)
+        width = _measure_hwpeq_width(hwp_eq_script)
 
-    # 실제 한컴 HYhwpEQ 기준 문자 폭
-    CHAR_WIDTH = 525
-    width = max(int(visible_len * CHAR_WIDTH) + 50, 400)
+    width = max(int(width) + 100, 400)
 
-    # 분수: 분수선 양쪽 여백
+    # 높이: baseUnit=1000 기준
+    height = 1100
     if has_fraction:
-        width += 200
-
-    # 높이: 실제 한컴 기준
-    height = 1125
-    if has_fraction:
-        height = 2200
+        height = 2100
     if has_sqrt:
-        height = max(height, 1400)
+        height = max(height, 1350)
     if has_fraction and has_sqrt:
-        height = max(height, 2800)
+        height = max(height, 2500)
 
     return (width, height)
 
@@ -570,11 +725,8 @@ class HWPXWriter:
                     else:
                         width += 500
             elif block.type == ContentType.EQUATION:
-                size = _measure_latex_size(block.value)
-                if size:
-                    width += size[0]
-                else:
-                    width += len(block.value) * 500
+                # 배점 위치 결정용 간이 추정 (LaTeX 문자 수 기반)
+                width += max(len(block.value) * 450, 800)
             elif block.type == ContentType.EQUATION_BLOCK:
                 width = 0  # 블록 수식 이후 새 줄
         # 줄바꿈 시뮬레이션: 마지막 줄의 너비만 반환
@@ -825,15 +977,14 @@ class HWPXWriter:
     def _insert_equation(self, p_elem: etree._Element, latex: str):
         """수식을 문단에 삽입.
 
-        1차: matplotlib로 수식 크기 측정 → 네이티브 HWP 수식 삽입
-        2차: 측정 실패 시 휴리스틱 추정으로 폴백
-        3차: 수식 변환 실패 시 이미지 폴백
+        1차: HYhwpEQ 폰트 메트릭으로 수식 크기 계산 → 네이티브 HWP 수식 삽입
+        2차: 수식 변환 실패 시 이미지 폴백
         """
         try:
             hwp_eq = latex_to_hwpeq(latex)
-            # matplotlib로 실제 수식 크기 측정 (정확), 실패 시 None → 폴백
-            measured_size = _measure_latex_size(latex)
-            self._inject_equation_xml(p_elem, hwp_eq, size=measured_size)
+            # HYhwpEQ 폰트 메트릭으로 정확한 수식 크기 계산
+            size = _estimate_equation_size(hwp_eq)
+            self._inject_equation_xml(p_elem, hwp_eq, size=size)
         except Exception as e:
             logger.warning("수식 변환 실패, 이미지 폴백: %s (%s)", latex, e)
             try:
@@ -1052,20 +1203,41 @@ class HWPXWriter:
 
         한글(HWP)은 모든 <hp:p>에 <hp:linesegarray>를 필수로 요구합니다.
         linesegarray는 문단의 마지막 자식으로 위치해야 합니다.
+
+        수식이 포함된 문단은 수식 높이에 맞게 vertsize/textheight를 조정하여
+        줄 간격 부족으로 인한 텍스트 겹침을 방지합니다.
         """
+        eq_tag = _qn("hp", "equation")
+        sz_tag = _qn("hp", "sz")
+
         for p in sec_elem.findall(_qn("hp", "p")):
-            if p.find(_qn("hp", "linesegarray")) is None:
-                lsa = etree.SubElement(p, _qn("hp", "linesegarray"))
-                ls = etree.SubElement(lsa, _qn("hp", "lineseg"))
-                ls.set("textpos", "0")
-                ls.set("vertpos", "0")
-                ls.set("vertsize", "1000")
-                ls.set("textheight", "1000")
-                ls.set("baseline", "850")
-                ls.set("spacing", "600")
-                ls.set("horzpos", "0")
-                ls.set("horzsize", "42520")
-                ls.set("flags", "393216")
+            if p.find(_qn("hp", "linesegarray")) is not None:
+                continue
+
+            # 문단 내 수식 높이 스캔
+            max_height = 1000  # 기본 텍스트 높이
+            for eq in p.iter(eq_tag):
+                sz = eq.find(sz_tag)
+                if sz is not None:
+                    h = int(sz.get("height", "0"))
+                    if h > max_height:
+                        max_height = h
+
+            textheight = max_height
+            baseline = int(textheight * 0.85)
+            spacing = int(textheight * 0.60)
+
+            lsa = etree.SubElement(p, _qn("hp", "linesegarray"))
+            ls = etree.SubElement(lsa, _qn("hp", "lineseg"))
+            ls.set("textpos", "0")
+            ls.set("vertpos", "0")
+            ls.set("vertsize", str(textheight))
+            ls.set("textheight", str(textheight))
+            ls.set("baseline", str(baseline))
+            ls.set("spacing", str(spacing))
+            ls.set("horzpos", "0")
+            ls.set("horzsize", "42520")
+            ls.set("flags", "393216")
 
     # ─── 저수준 XML 헬퍼 ─────────────────────────────────────
 
