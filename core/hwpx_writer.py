@@ -125,12 +125,15 @@ def _measure_latex_size(latex: str) -> tuple[int, int] | None:
     """matplotlib로 LaTeX 수식의 렌더링 크기를 측정.
 
     분수(\\frac) 포함 시 분자·분모를 개별 측정하여 합성합니다.
-    HWP 수식 렌더러는 분수 내용을 약 75% 크기로 렌더링하므로,
-    분자·분모를 fontsize×0.75로 측정해서 정확한 너비를 구합니다.
+    HWP의 HYhwpEQ 폰트는 matplotlib 기본 폰트보다 좁으므로
+    0.65 보정 계수를 적용합니다.
 
     Returns:
         (width, height) in hwpunit, or None if measurement fails.
     """
+    # HWP HYhwpEQ 폰트 보정 계수 (matplotlib 대비 약 65% 크기)
+    HWP_SCALE = 0.65
+
     try:
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.figure import Figure
@@ -169,28 +172,33 @@ def _measure_latex_size(latex: str) -> tuple[int, int] | None:
             w_suffix = mpl_width(suffix) if suffix else 0
 
             # 합성: prefix + space + fraction + space + suffix
-            w_frac = max(w_num, w_den) + 300  # fraction bar padding
+            w_frac = max(w_num, w_den) + 200  # fraction bar padding
             w = w_prefix
             if w_prefix:
-                w += 200  # prefix와 분수 사이 간격
+                w += 150  # prefix와 분수 사이 간격
             w += w_frac
             if w_suffix:
-                w += 200  # 분수와 suffix 사이 간격
+                w += 150  # 분수와 suffix 사이 간격
                 w += w_suffix
 
-            h = 2400  # 분수 기본 높이
-            if "\\sqrt" in latex:
-                h = max(h, 3200)
+            # HWP 폰트 보정 적용
+            w = max(int(w * HWP_SCALE), 400)
 
-            return (max(w, 400), h)
+            h = 2200  # 분수 기본 높이 (실제 한컴 기준)
+            if "\\sqrt" in latex:
+                h = max(h, 2800)
+
+            return (w, h)
 
         # 분수 없는 경우: 직접 측정
         w = mpl_width(latex)
-        h = 1200
-        if "\\sqrt" in latex:
-            h = 1600
+        w = max(int(w * HWP_SCALE), 400)
 
-        return (max(w, 400), h)
+        h = 1125  # 단일행 높이 (실제 한컴 기준)
+        if "\\sqrt" in latex:
+            h = 1400
+
+        return (w, h)
     except Exception:
         return None
 
@@ -199,6 +207,7 @@ def _estimate_equation_size(hwp_eq_script: str) -> tuple[int, int]:
     """수식 크기 추정 (폴백용, matplotlib 측정 실패 시 사용).
 
     HWP 수식 스크립트에서 가시 문자를 세어 크기를 추정합니다.
+    실제 한컴 기준: 1문자 ≈ 525 hwpunit (baseUnit=1000, font=HYhwpEQ).
     """
     has_fraction = "over" in hwp_eq_script or "atop" in hwp_eq_script
     has_sqrt = "sqrt" in hwp_eq_script or "root" in hwp_eq_script
@@ -209,28 +218,32 @@ def _estimate_equation_size(hwp_eq_script: str) -> tuple[int, int]:
     else:
         visible_len = _visual_char_count(hwp_eq_script)
 
-    CHAR_WIDTH = 650
-    PADDING = 200
-    width = max(int(visible_len * CHAR_WIDTH) + PADDING, 400)
+    # 실제 한컴 HYhwpEQ 기준 문자 폭
+    CHAR_WIDTH = 525
+    width = max(int(visible_len * CHAR_WIDTH) + 50, 400)
 
+    # 분수: 분수선 양쪽 여백
     if has_fraction:
-        width = int(width * 1.4)
-    if has_sqrt:
-        width = int(width * 1.4)
+        width += 200
 
-    height = 1200
+    # 높이: 실제 한컴 기준
+    height = 1125
     if has_fraction:
-        height = 2400
+        height = 2200
     if has_sqrt:
-        height = max(height, 1600)
+        height = max(height, 1400)
     if has_fraction and has_sqrt:
-        height = max(height, 3200)
+        height = max(height, 2800)
 
     return (width, height)
 
 
 def _visual_char_count(text: str) -> float:
-    """HWP 수식 스크립트의 가시 문자 수 (폴백용)."""
+    """HWP 수식 스크립트의 가시 문자 수 (폴백용).
+
+    공백도 0.30 가중치로 포함 (HWP 수식 공백은 문자 폭의 약 30%).
+    위첨자/아래첨자 문자는 0.50 가중치 (축소 렌더링).
+    """
     s = text
     for kw in _SYMBOL_KEYWORDS:
         s = s.replace(kw, "G")
@@ -249,10 +262,13 @@ def _visual_char_count(text: str) -> float:
 
     for ch in "{}^_":
         s = s.replace(ch, "")
-    total = len(s.replace(" ", "").strip())
+    stripped = s.strip()
+    non_space = len(stripped.replace(" ", ""))
+    spaces = len(stripped) - non_space
+    total = non_space + spaces * 0.30
 
     base = total - sup_sub_chars
-    return base + sup_sub_chars * 0.5
+    return max(base + sup_sub_chars * 0.50, 1.0)
 
 
 class HWPXWriter:
@@ -888,10 +904,10 @@ class HWPXWriter:
         pos.set("vertOffset", "0")
         pos.set("horzOffset", "0")
 
-        # 외부 여백 (인라인 수식-텍스트 간 간격)
+        # 외부 여백 (실제 한컴 기준: left=56, right=56)
         out_margin = etree.SubElement(eq, _qn("hp", "outMargin"))
-        out_margin.set("left", "170")
-        out_margin.set("right", "170")
+        out_margin.set("left", "56")
+        out_margin.set("right", "56")
         out_margin.set("top", "0")
         out_margin.set("bottom", "0")
 

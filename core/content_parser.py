@@ -55,6 +55,10 @@ def _parse_question(q_data: dict) -> Question:
     # 쉼표로 구분된 독립 수식 분리 (안전 폴백)
     question.contents = _split_comma_equations(question.contents)
 
+    # 본문에서 배점 텍스트 제거 (score 필드에 이미 있으므로 중복 방지)
+    if question.score:
+        question.contents = _strip_score_text(question.contents)
+
     # 선택지
     for choice_data in q_data.get("choices", []):
         choice = _parse_choice(choice_data)
@@ -128,6 +132,12 @@ def _parse_content_block(block_data: dict) -> ContentBlock | None:
     # 텍스트 블록에 $...$ 인라인 LaTeX가 있으면 분리
     if content_type == ContentType.TEXT and "$" in value:
         split = _split_inline_latex(value)
+        if len(split) > 1:
+            return split  # type: ignore[return-value]
+
+    # 텍스트 블록에 LaTeX 명령어(\sqrt, \frac 등)가 있으면 수식 분리
+    if content_type == ContentType.TEXT and '\\' in value:
+        split = _split_latex_commands(value)
         if len(split) > 1:
             return split  # type: ignore[return-value]
 
@@ -296,6 +306,82 @@ def _split_underline_markup(text: str) -> list[ContentBlock]:
         blocks.append(ContentBlock(type=ContentType.TEXT, value=after))
 
     return blocks if blocks else [ContentBlock(type=ContentType.TEXT, value=text)]
+
+
+# ── LaTeX 명령어 감지 패턴 ──
+_LATEX_CMD_RE = re.compile(
+    r'\\(?:sqrt|d?frac|tfrac|sum|prod|int|oint|lim|'
+    r'times|div|pm|mp|cdot|cdots|ldots|'
+    r'left|right|leq|geq|neq|infty|'
+    r'alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|'
+    r'lambda|mu|nu|xi|pi|rho|sigma|tau|phi|chi|psi|omega|'
+    r'partial|nabla|forall|exists|'
+    r'dot|ddot|hat|bar|vec|tilde|overline|underline|'
+    r'log|ln|sin|cos|tan|sec|csc|cot|'
+    r'square|circ|triangle|angle|perp|parallel|'
+    r'cup|cap|subset|supset|in|notin|'
+    r'mathbb|mathrm|mathbf|mathit|text)'
+    r'(?:\b|(?=[{^_(\[]))'
+)
+
+# 배점 텍스트 패턴 (예: [3점], [4점])
+_SCORE_TEXT_RE = re.compile(r'\s*\[\d+점\]\s*')
+
+
+def _split_latex_commands(text: str) -> list[ContentBlock]:
+    """텍스트에서 LaTeX 명령어를 감지하여 text + equation 블록으로 분리.
+
+    예: "ㄱ. \\sqrt{2}+\\sqrt{2}" → text("ㄱ. ") + eq("\\sqrt{2}+\\sqrt{2}")
+    예: "\\sqrt{24} \\div \\sqrt{3} 의 값은" → eq(...) + text(" 의 값은")
+    """
+    first_match = _LATEX_CMD_RE.search(text)
+    if not first_match:
+        return [ContentBlock(type=ContentType.TEXT, value=text)]
+
+    latex_start = first_match.start()
+    before = text[:latex_start]
+
+    # LaTeX 영역 끝 찾기: 한글이 나오면 수식 종료
+    rest = text[latex_start:]
+    korean_match = re.search(r'(?<=[^\\])\s+[\uac00-\ud7a3]', rest)
+    if korean_match:
+        eq_end = latex_start + korean_match.start()
+        eq_text = text[latex_start:eq_end].strip()
+        after_text = text[eq_end:]
+    else:
+        eq_text = rest.strip()
+        after_text = ""
+
+    blocks: list[ContentBlock] = []
+    if before.strip():
+        blocks.append(ContentBlock(type=ContentType.TEXT, value=before))
+    if eq_text:
+        blocks.append(ContentBlock(type=ContentType.EQUATION, value=eq_text))
+    if after_text.strip():
+        # 남은 텍스트에 LaTeX가 더 있을 수 있으므로 재귀 처리
+        remaining = _split_latex_commands(after_text)
+        blocks.extend(remaining)
+
+    return blocks if len(blocks) > 1 else [
+        ContentBlock(type=ContentType.TEXT, value=text)
+    ]
+
+
+def _strip_score_text(blocks: list[ContentBlock]) -> list[ContentBlock]:
+    """텍스트 블록에서 [N점] 배점 패턴을 제거 (score 필드와 중복 방지)."""
+    result: list[ContentBlock] = []
+    for block in blocks:
+        if block.type == ContentType.TEXT:
+            cleaned = _SCORE_TEXT_RE.sub('', block.value)
+            if cleaned.strip():
+                result.append(ContentBlock(
+                    type=ContentType.TEXT,
+                    value=cleaned,
+                    underline=block.underline,
+                ))
+        else:
+            result.append(block)
+    return result
 
 
 def build_document(

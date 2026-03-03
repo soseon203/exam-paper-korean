@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 from PIL import Image
@@ -180,14 +182,44 @@ class OCREngine:
         )
 
         response_text = message.content[0].text
-        return self._extract_json(response_text)
+        try:
+            return self._extract_json(response_text)
+        except json.JSONDecodeError as e:
+            # JSON 파싱 완전 실패 시 1회 재시도
+            logger.warning("JSON 파싱 실패 (1차), 재시도: %s", e)
+            message2 = self.client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=CLAUDE_MAX_TOKENS,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": base64_image,
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": EXAM_OCR_PROMPT,
+                            },
+                        ],
+                    }
+                ],
+            )
+            return self._extract_json(message2.content[0].text)
 
     def _extract_json(self, text: str) -> dict:
-        """응답에서 JSON 추출 (LaTeX 수식이 포함된 경우도 처리)."""
-        import json
-        import re
+        """응답에서 JSON 추출 (LaTeX 수식이 포함된 경우도 처리).
 
-        # JSON 블록 추출 시도
+        LLM이 반환하는 JSON은 LaTeX 역슬래시, 이스케이프 누락 등으로
+        파싱 실패가 빈번합니다. 여러 단계의 복구를 시도합니다.
+        """
+
+        # ── 1단계: JSON 블록 추출 ──
         text = text.strip()
 
         # ```json ... ``` 블록 처리
@@ -209,38 +241,41 @@ class OCREngine:
         # trailing comma 제거
         text = re.sub(r",\s*([}\]])", r"\1", text)
 
+        # ── 1.5단계: LaTeX-JSON 이스케이프 충돌 방지 ──
+        # \f(rac), \b(eta), \n(eq), \r(ight), \t(imes) 등은
+        # JSON 이스케이프(\f=form-feed, \b=backspace 등)와 충돌하므로
+        # LaTeX 명령어인 경우(\+알파벳 연속) 이중 이스케이프로 보호
+        text = re.sub(r'(?<!\\)\\([bfnrt])(?=[a-zA-Z])', r'\\\\\1', text)
+
+        # ── 2단계: 직접 파싱 ──
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
 
-        # 복구 시도: value 내부의 이스케이프 안 된 역슬래시 처리
-        # JSON 문자열 안의 \를 \\로 이스케이프 (이미 이스케이프된 것 제외)
-        fixed = re.sub(
-            r'(?<=: ")(.*?)(?=")',
-            lambda m: m.group(0).replace("\\", "\\\\")
-                .replace("\\\\n", "\\n")
-                .replace("\\\\t", "\\t")
-                .replace('\\\\"', '\\"')
-                .replace("\\\\\\\\", "\\\\"),
-            text,
-            flags=re.DOTALL,
-        )
+        # ── 3단계: 문자열 내부 역슬래시 이스케이프 복구 ──
+        fixed = self._fix_json_backslashes(text)
         try:
             return json.loads(fixed)
         except json.JSONDecodeError:
             pass
 
-        # 최종 시도: 줄 단위로 문제 위치 파악 후 수동 수정
-        logger.warning("JSON 파싱 실패, 줄 단위 복구 시도")
+        # ── 4단계: 문자열 값을 보호하면서 구조 복구 ──
+        logger.warning("JSON 파싱 실패, 문자열 보호 복구 시도")
+        repaired = self._repair_json_strings(text)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
+
+        # ── 5단계: 줄 단위 복구 (최후 수단) ──
+        logger.warning("JSON 파싱 재실패, 줄 단위 복구 시도")
         lines = text.split("\n")
         for i, line in enumerate(lines):
             # "value" 필드에서 이스케이프 안 된 큰따옴표 수정
-            # "value": "some "broken" text" 패턴
             match = re.match(r'^(\s*"value"\s*:\s*")(.*)(")(.*)$', line)
             if match:
                 inner = match.group(2)
-                # 내부 큰따옴표 이스케이프
                 inner = inner.replace('\\"', '\x00')
                 inner = inner.replace('"', '\\"')
                 inner = inner.replace('\x00', '\\"')
@@ -249,6 +284,93 @@ class OCREngine:
         text = "\n".join(lines)
         text = re.sub(r",\s*([}\]])", r"\1", text)
         return json.loads(text)
+
+    @staticmethod
+    def _fix_json_backslashes(text: str) -> str:
+        """JSON 문자열 내부의 이스케이프 안 된 역슬래시를 수정 (1차 시도).
+
+        전체 텍스트에서 \\X (X가 유효 JSON 이스케이프가 아닌 것)를 \\\\X로 변환.
+        JSON 구조 바깥에는 역슬래시가 없으므로 전체 텍스트에 적용해도 안전.
+        """
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+        # \u는 유지 (\uXXXX 유니코드 이스케이프일 수 있으므로 — 4단계에서 정밀 처리)
+        return re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', text)
+
+    @staticmethod
+    def _repair_json_strings(text: str) -> str:
+        """JSON 문자열 값 내부의 깨진 부분을 복구.
+
+        문자열 리터럴을 하나씩 추출하면서:
+        - 유효하지 않은 이스케이프(\\frac, \\{ 등)를 이중 이스케이프
+        - \\u + 비16진수를 이중 이스케이프 (\\underset 등 LaTeX)
+        - 문자열 내 줄바꿈/탭을 이스케이프
+        - 내부 따옴표를 감지하여 이스케이프
+        """
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+
+        result = []
+        i = 0
+        while i < len(text):
+            if text[i] == '"':
+                j = i + 1
+                parts = []
+                while j < len(text):
+                    ch = text[j]
+                    if ch == '\\' and j + 1 < len(text):
+                        nc = text[j + 1]
+                        if nc == 'u':
+                            # \uXXXX 유니코드 이스케이프 검증
+                            hex_part = text[j + 2:j + 6]
+                            if (len(hex_part) == 4
+                                    and all(c in '0123456789abcdefABCDEF'
+                                            for c in hex_part)):
+                                parts.append('\\u')
+                                parts.append(hex_part)
+                                j += 6
+                            else:
+                                # \underset 등 LaTeX → 이중 이스케이프
+                                parts.append('\\\\u')
+                                j += 2
+                        elif nc in '"\\/bfnrt':
+                            parts.append(ch)
+                            parts.append(nc)
+                            j += 2
+                        else:
+                            # \frac, \{ 등 → 이중 이스케이프
+                            parts.append('\\\\')
+                            parts.append(nc)
+                            j += 2
+                        continue
+                    if ch == '"':
+                        # 진짜 문자열 끝인지 확인
+                        k = j + 1
+                        while k < len(text) and text[k] in ' \t\r\n':
+                            k += 1
+                        if k >= len(text) or text[k] in ',}]:"':
+                            break  # 구조 문자 → 진짜 끝
+                        # 내부 따옴표 → 이스케이프
+                        parts.append('\\"')
+                        j += 1
+                        continue
+                    if ch == '\n':
+                        parts.append('\\n')
+                        j += 1
+                        continue
+                    if ch == '\r':
+                        j += 1
+                        continue
+                    parts.append(ch)
+                    j += 1
+
+                result.append('"')
+                result.append(''.join(parts))
+                result.append('"')
+                i = j + 1
+            else:
+                result.append(text[i])
+                i += 1
+
+        return ''.join(result)
 
     def validate_api_key(self) -> bool:
         """API 키 유효성 검사."""
