@@ -78,6 +78,9 @@ EXAM_OCR_PROMPT = """당신은 한국 수학 시험지를 정밀하게 OCR하는
 - **text**: 한글 텍스트, 한글 괄호 내용("(가)", "(나)"), 조사, 문장부호
 - 수식+한글이 섞인 문장은 반드시 분리:
   올바른 예: {"type":"equation","value":"a > 0"}, {"type":"text","value":"이고 "}, {"type":"equation","value":"b"}, {"type":"text","value":"는 정수일 때"}
+- **모든 숫자(정수, 소수)도 반드시 equation 타입으로 분리**:
+  올바른 예: {"type":"equation","value":"30"}, {"type":"text","value":"개의 공을"}
+  잘못된 예: {"type":"text","value":"30개의 공을"} — 숫자가 텍스트에 포함되면 안 됩니다!
 - 쉼표로 구분된 독립 수식은 개별 블록으로:
   {"type":"equation","value":"A=2^6"}, {"type":"text","value":", "}, {"type":"equation","value":"B=3^6"}
 - □(빈칸) → {"type":"equation","value":"\\\\square"}

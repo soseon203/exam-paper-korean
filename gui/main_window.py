@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt, Signal, QThread, QObject
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -64,12 +65,14 @@ class ConversionWorker(QObject):
         output_path: str,
         api_key: str,
         template_path: str | None = None,
+        skip_first_page: bool = False,
     ):
         super().__init__()
         self.file_path = file_path
         self.output_path = output_path
         self.api_key = api_key
         self.template_path = template_path
+        self.skip_first_page = skip_first_page
         self._cancelled = False
         # 미리보기 응답 동기화용
         self._preview_event = threading.Event()
@@ -104,6 +107,13 @@ class ConversionWorker(QObject):
 
         total_pages = len(images)
         self.progress.emit(10, f"{total_pages}페이지 로드 완료")
+
+        # ── 표지 건너뛰기 ──
+        page_offset = 0
+        if self.skip_first_page and total_pages > 1:
+            images = images[1:]
+            page_offset = 1
+            self.progress.emit(10, "첫 페이지(표지) 건너뜀")
 
         # ── Gate 1: 이미지 품질 검사 ──
         self.progress.emit(10, "이미지 품질 검사 중...")
@@ -152,7 +162,7 @@ class ConversionWorker(QObject):
                 return
 
             img = images[idx]
-            page_num = idx + 1
+            page_num = idx + 1 + page_offset
             pct = 15 + int((seq / len(valid_indices)) * 60)
             self.progress.emit(pct, f"OCR 처리 중... ({seq + 1}/{len(valid_indices)})")
 
@@ -288,6 +298,8 @@ class MainWindow(QMainWindow):
         )
         self._file_path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._file_path_label.setMinimumHeight(80)
+        self._file_path_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._file_path_label.mousePressEvent = lambda _: self._browse_file()
         layout.addWidget(self._file_path_label)
         layout.addSpacing(8)
 
@@ -314,6 +326,16 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self._output_input)
         btn_layout.addWidget(self._output_browse_btn)
         layout.addLayout(btn_layout)
+        layout.addSpacing(6)
+
+        # ── 표지 건너뛰기 체크박스 ──
+        self._skip_cover_cb = QCheckBox("첫 페이지 건너뛰기 (표지)")
+        self._skip_cover_cb.setChecked(True)
+        self._skip_cover_cb.setToolTip(
+            "PDF 첫 페이지가 표지인 경우 OCR 처리를 건너뛰어\nAPI 비용을 절약합니다"
+        )
+        self._skip_cover_cb.setStyleSheet("font-size: 12px; color: #344054;")
+        layout.addWidget(self._skip_cover_cb)
         layout.addSpacing(6)
 
         # ── 양식 파일(템플릿) 선택 ──
@@ -635,6 +657,7 @@ class MainWindow(QMainWindow):
         self._worker = ConversionWorker(
             self._selected_file, output_path, api_key,
             template_path=self._selected_template,
+            skip_first_page=self._skip_cover_cb.isChecked(),
         )
         self._worker.moveToThread(self._thread)
 

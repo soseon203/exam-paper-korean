@@ -208,12 +208,17 @@ def _measure_hwpeq_width(script: str, scale: float = 1.0) -> float:
 
     Args:
         script: HWP 수식 스크립트
-        scale: 크기 비율 (1.0=본문, 0.75=분수, 0.65=첨자)
+        scale: 크기 비율 (1.0=본문, 0.75=분수, 0.50=첨자)
 
     Returns:
         너비 (hwpunit)
     """
     s = script
+
+    # 구문용 공백 제거: "10 ^{5}" → "10^{5}" (공백은 시각적 너비에 기여하지 않음)
+    s = re.sub(r'\s+([\^_])', r'\1', s)
+    s = re.sub(r'([\^_])\s+', r'\1', s)
+
     width = 0.0
 
     # 1. 기호 키워드 → 알려진 폭 (긴 이름 먼저)
@@ -232,15 +237,16 @@ def _measure_hwpeq_width(script: str, scale: float = 1.0) -> float:
         s = s.replace(cmd + " ", "")
         s = s.replace(cmd, "")
 
-    # 3. 위첨자/아래첨자: 65% 축소 크기
+    # 3. 위첨자/아래첨자: 50% 축소 크기 (HYhwpEQ 실측 기준)
+    SUP_SUB_SCALE = 0.50
     for m in re.finditer(r"[\^_]\{([^{}]*)\}", s):
-        width += _measure_hwpeq_width(m.group(1), scale * 0.65)
+        width += _measure_hwpeq_width(m.group(1), scale * SUP_SUB_SCALE)
     s = re.sub(r"[\^_]\{[^{}]*\}", "", s)
 
     for m in re.finditer(r"[\^_](\S)", s):
         ch = m.group(1)
         if ch not in "{}":
-            width += _HWPEQ_CHAR_WIDTHS.get(ch, 500) * scale * 0.65
+            width += _HWPEQ_CHAR_WIDTHS.get(ch, 500) * scale * SUP_SUB_SCALE
     s = re.sub(r"[\^_]\S", "", s)
 
     # 4. 나머지 문자의 개별 폭 합산
@@ -381,14 +387,20 @@ def _estimate_equation_size(hwp_eq_script: str) -> tuple[int, int]:
 
     width = max(int(width) + 100, 400)
 
-    # 높이: baseUnit=1000 기준
-    height = 1100
+    # 높이: baseUnit=1000 기준 (HYhwpEQ 실측)
+    # 일반 수식: ascent(800) + descent(200) = 1000
+    # 분수: 분자(750) + 분수선(100) + 분모(750) + 여백(200) = 1800
+    # 제곱근: 루트 기호 오버헤드(250) 추가
+    height = 1000
+    has_sup_sub = "^" in hwp_eq_script or "_" in hwp_eq_script
+    if has_sup_sub:
+        height = 1150  # 첨자로 인한 상하 확장
     if has_fraction:
-        height = 2100
+        height = 1800
     if has_sqrt:
-        height = max(height, 1350)
+        height = max(height, 1250)
     if has_fraction and has_sqrt:
-        height = max(height, 2500)
+        height = max(height, 2100)
 
     return (width, height)
 
@@ -977,14 +989,12 @@ class HWPXWriter:
     def _insert_equation(self, p_elem: etree._Element, latex: str):
         """수식을 문단에 삽입.
 
-        1차: HYhwpEQ 폰트 메트릭으로 수식 크기 계산 → 네이티브 HWP 수식 삽입
+        1차: HWP 네이티브 수식 삽입 (크기 자동 지정)
         2차: 수식 변환 실패 시 이미지 폴백
         """
         try:
             hwp_eq = latex_to_hwpeq(latex)
-            # HYhwpEQ 폰트 메트릭으로 정확한 수식 크기 계산
-            size = _estimate_equation_size(hwp_eq)
-            self._inject_equation_xml(p_elem, hwp_eq, size=size)
+            self._inject_equation_xml(p_elem, hwp_eq)
         except Exception as e:
             logger.warning("수식 변환 실패, 이미지 폴백: %s (%s)", latex, e)
             try:
@@ -1007,7 +1017,7 @@ class HWPXWriter:
         Args:
             p_elem: 부모 문단 요소
             hwp_eq_script: HWP 수식 스크립트
-            size: (width, height) in hwpunit. None이면 휴리스틱 추정.
+            size: (width, height) in hwpunit. None이면 HYhwpEQ 메트릭으로 추정.
         """
         self._eq_counter += 1
 
@@ -1026,20 +1036,25 @@ class HWPXWriter:
         eq.set("lock", "0")
         eq.set("dropcapstyle", "None")
         eq.set("version", "Equation Version 60")
-        eq.set("baseLine", "85")
+        # 분수는 분수선이 텍스트 기준선에 오도록 baseLine=50
+        has_frac = "over" in hwp_eq_script or "atop" in hwp_eq_script
+        eq.set("baseLine", "50" if has_frac else "85")
         eq.set("textColor", "#000000")
         eq.set("baseUnit", "1000")
         eq.set("lineMode", "CHAR")
         eq.set("font", "HYhwpEQ")
 
-        # ShapeSize — matplotlib 측정 또는 휴리스틱 추정
+        # ShapeSize — 자동 스케일링 유도를 위해 0 할당 (렌더링 왜곡 및 여백 과다 생성 방지)
         est_width, est_height = size
         sz = etree.SubElement(eq, _qn("hp", "sz"))
-        sz.set("width", str(est_width))
-        sz.set("height", str(est_height))
+        sz.set("width", "0")
+        sz.set("height", "0")
         sz.set("widthRelTo", "ABSOLUTE")
         sz.set("heightRelTo", "ABSOLUTE")
         sz.set("protect", "0")
+        
+        # 줄간격 중첩 방지 로직 보존용 임시 높이 데이터 은닉 보관
+        eq.set("data-est-height", str(est_height))
 
         # ShapePosition — 글자처럼 취급 (인라인)
         pos = etree.SubElement(eq, _qn("hp", "pos"))
@@ -1204,28 +1219,49 @@ class HWPXWriter:
         한글(HWP)은 모든 <hp:p>에 <hp:linesegarray>를 필수로 요구합니다.
         linesegarray는 문단의 마지막 자식으로 위치해야 합니다.
 
-        수식이 포함된 문단은 수식 높이에 맞게 vertsize/textheight를 조정하여
-        줄 간격 부족으로 인한 텍스트 겹침을 방지합니다.
+        수식이 포함된 문단은 수식의 baseLine 속성을 기반으로
+        위쪽/아래쪽 확장량을 계산하여 줄 겹침을 방지합니다.
+        baseLine은 수식 상단에서 텍스트 기준선까지의 비율(0~100)입니다.
         """
         eq_tag = _qn("hp", "equation")
         sz_tag = _qn("hp", "sz")
+        TEXT_BASE_HEIGHT = 1000  # 기본 텍스트 줄 높이
+        TEXT_BASELINE = 850     # 기본 텍스트 기준선 (상단에서 85%)
 
         for p in sec_elem.findall(_qn("hp", "p")):
             if p.find(_qn("hp", "linesegarray")) is not None:
                 continue
 
-            # 문단 내 수식 높이 스캔
-            max_height = 1000  # 기본 텍스트 높이
+            # 문단 내 수식의 above/below 기준선 확장량 계산
+            max_above = TEXT_BASELINE  # 텍스트 기준선 위 최대 높이
+            max_below = TEXT_BASE_HEIGHT - TEXT_BASELINE  # 기준선 아래 최대 높이
+
             for eq in p.iter(eq_tag):
                 sz = eq.find(sz_tag)
-                if sz is not None:
-                    h = int(sz.get("height", "0"))
-                    if h > max_height:
-                        max_height = h
+                if sz is None:
+                    continue
+                    
+                # 임시 보관된 예상 높이 꺼내기 및 속성 제거 (실제 XML 출력엔 안 남음)
+                h_val = eq.get("data-est-height") or sz.get("height", "0")
+                h = int(h_val)
+                
+                if "data-est-height" in eq.attrib:
+                    del eq.attrib["data-est-height"]
+                    
+                if h <= TEXT_BASE_HEIGHT:
+                    continue
 
-            textheight = max_height
-            baseline = int(textheight * 0.85)
-            spacing = int(textheight * 0.60)
+                # baseLine: 수식 상단에서 텍스트 기준선까지 비율
+                bl = int(eq.get("baseLine", "85"))
+                eq_above = int(h * bl / 100)      # 기준선 위 높이
+                eq_below = h - eq_above            # 기준선 아래 높이
+
+                max_above = max(max_above, eq_above)
+                max_below = max(max_below, eq_below)
+
+            textheight = max_above + max_below
+            baseline = max_above
+            spacing = int(textheight * 0.50)
 
             lsa = etree.SubElement(p, _qn("hp", "linesegarray"))
             ls = etree.SubElement(lsa, _qn("hp", "lineseg"))

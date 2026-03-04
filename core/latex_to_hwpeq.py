@@ -233,9 +233,9 @@ class LaTeXToHWPConverter:
 
     def _build_patterns(self):
         """정규식 패턴 사전 컴파일."""
-        # \frac{a}{b}
+        # \frac{a}{b}, \dfrac{a}{b}, \tfrac{a}{b}
         self._frac_pattern = re.compile(
-            r"\\frac\s*" + self._brace_group("num") + r"\s*" + self._brace_group("den")
+            r"\\[dt]?frac\s*" + self._brace_group("num") + r"\s*" + self._brace_group("den")
         )
         # \sqrt[n]{x} 또는 \sqrt{x}
         self._sqrt_n_pattern = re.compile(

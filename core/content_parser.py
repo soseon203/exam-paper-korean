@@ -221,7 +221,7 @@ def _split_mixed_text_equation(text: str) -> list[ContentBlock]:
         return [ContentBlock(type=ContentType.TEXT, value=text)]
 
     # 수식 후보가 없으면 분리 불필요
-    if not re.search(r'[a-zA-Z]', text):
+    if not re.search(r'[a-zA-Z0-9]', text):
         return [ContentBlock(type=ContentType.TEXT, value=text)]
 
     blocks: list[ContentBlock] = []
